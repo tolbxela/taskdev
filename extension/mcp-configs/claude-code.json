@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "taskdev": {
+      "command": "node",
+      "args": ["${userHome}/.windsurf/extensions/tolbxela.taskdev-0.1.0/mcp.mjs"],
+      "comment": "When installed as a VS Code/Windsurf extension. For dev use, point at your repo path instead."
+    }
+  }
+}

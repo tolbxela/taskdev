@@ -1,0 +1,14 @@
+{
+  "project": "TaskDev",
+  "tasks": [
+    {
+      "name": "compile-extension",
+      "command": "node scripts/package-vsix.cjs"
+    },
+    {
+      "name": "log-smoke",
+      "command": "npm run log-smoke",
+      "cwd": "extension"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "project": "TaskDev Example",
+  "tasks": [
+    {
+      "name": "hello-test",
+      "command": "node -e \"console.log('hello from taskdev example')\""
+    }
+  ]
+}

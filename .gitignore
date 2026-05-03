@@ -1,0 +1,10 @@
+logs/
+.windsurf/
+.mcp.json
+.taskdev/
+.state.json
+.state.json.tmp
+.commands/
+node_modules/
+taskdev.code-workspace
+*.vsix

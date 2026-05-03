@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "taskdev": {
+      "command": "node",
+      "args": ["c:/Users/Sascha/.windsurf/extensions/tolbxela.taskdev-0.1.0/mcp.mjs"]
+    }
+  }
+}

@@ -1,0 +1,157 @@
+{
+  "name": "taskdev",
+  "displayName": "TaskDev",
+  "description": "Manage long-running dev tasks from VS Code and MCP with shared process supervision, reliable start/stop, and file-backed logs for AI agents.",
+  "version": "0.1.14",
+  "publisher": "tolbxela",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#1f2937",
+    "theme": "dark"
+  },
+  "author": {
+    "name": "Tolbxela"
+  },
+  "maintainers": [
+    {
+      "name": "Tolbxela"
+    }
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Tolbxela/taskdev.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Tolbxela/taskdev/issues"
+  },
+  "homepage": "https://github.com/Tolbxela/taskdev#readme",
+  "keywords": [
+    "tasks",
+    "task-runner",
+    "process-manager",
+    "process-supervisor",
+    "dev-server",
+    "logs",
+    "mcp",
+    "model-context-protocol",
+    "ai-agents",
+    "codex",
+    "claude-code",
+    "windsurf",
+    "dev-tools"
+  ],
+  "categories": [
+    "Other"
+  ],
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "main": "./extension.js",
+  "scripts": {
+    "log-smoke": "node -e \"console.log('taskdev log smoke stdout'); console.error('taskdev log smoke stderr')\"",
+    "test": "node test/core.test.cjs"
+  },
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:taskdev.tasks",
+    "onCommand:taskdev.start",
+    "onCommand:taskdev.stop",
+    "onCommand:taskdev.showLog",
+    "onCommand:taskdev.refresh",
+    "onCommand:taskdev.openTasksFile",
+    "onCommand:taskdev.installMcp"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.0"
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "taskdev",
+          "title": "TaskDev",
+          "icon": "$(list-tree)"
+        }
+      ]
+    },
+    "views": {
+      "taskdev": [
+        {
+          "id": "taskdev.tasks",
+          "name": "Tasks",
+          "icon": "$(list-tree)"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "taskdev.start",
+        "title": "Start task",
+        "icon": "$(play)"
+      },
+      {
+        "command": "taskdev.stop",
+        "title": "Stop task",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "taskdev.showLog",
+        "title": "Show log",
+        "icon": "$(output)"
+      },
+      {
+        "command": "taskdev.refresh",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "taskdev.openTasksFile",
+        "title": "Open taskdev.json",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "taskdev.installMcp",
+        "title": "Install MCP config",
+        "icon": "$(plug)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "taskdev.installMcp",
+          "when": "view == taskdev.tasks",
+          "group": "navigation@1"
+        },
+        {
+          "command": "taskdev.openTasksFile",
+          "when": "view == taskdev.tasks",
+          "group": "navigation@2"
+        },
+        {
+          "command": "taskdev.refresh",
+          "when": "view == taskdev.tasks",
+          "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "taskdev.start",
+          "when": "view == taskdev.tasks && viewItem == stopped",
+          "group": "inline@1"
+        },
+        {
+          "command": "taskdev.stop",
+          "when": "view == taskdev.tasks && viewItem == running",
+          "group": "inline@1"
+        },
+        {
+          "command": "taskdev.showLog",
+          "when": "view == taskdev.tasks && (viewItem == running || viewItem == stopped)",
+          "group": "inline@2"
+        }
+      ]
+    }
+  }
+}
