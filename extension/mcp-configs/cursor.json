@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "taskdev": {
+      "command": "node",
+      "args": ["${userHome}/.windsurf/extensions/tolbxela.taskdev-0.1.0/mcp.mjs"],
+      "comment": "Cursor supports global ~/.cursor/mcp.json and project .cursor/mcp.json. Adjust the extension path/version after installing TaskDev."
+    }
+  }
+}

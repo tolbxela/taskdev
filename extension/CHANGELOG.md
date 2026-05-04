@@ -1,11 +1,22 @@
 # Changelog
 
+## 0.1.15 - 2026-05-04
+
+- Automatically create `taskdev.json` and `.taskdev/` runtime folders from the
+  extension UI.
+- Added Cursor MCP config export targets, preselected existing IDE config
+  targets, and a Cursor config template.
+- Improved task tree presentation with cleaner labels, richer tooltips, and
+  optional task icons/details.
+- Made task rows non-clickable so only inline start, stop, and log actions run.
+- Reduced sidebar refresh overhead by caching tree snapshots and reconciling
+  process state less aggressively.
+
 ## 0.1.14 - 2026-05-03
 
 - First publish-ready baseline.
 - Simplified docs, root MIT license, search-friendly README, and full release
   changelog.
-- Packaged `taskdev-0.1.14.vsix`.
 - Prompt after extension upgrades to review MCP configs without silently
   replacing them.
 
@@ -61,8 +72,6 @@
 ## 0.1.4 - 2026-04-26
 
 - Added the TaskDev MCP install command to the sidebar.
-- Note: the restored VSIX filename is `0.1.4`, but its manifest still reports
-  `0.1.3`.
 
 ## 0.1.3 - 2026-04-26
 

@@ -1,7 +1,7 @@
 # Agent Guide
 
 This repository builds **TaskDev**, a VS Code / Windsurf extension for
-supervising long-running developer tasks and exposing them through MCP.
+supervising developer tasks and exposing them through MCP.
 
 ## Repository Layout
 
@@ -14,7 +14,7 @@ supervising long-running developer tasks and exposing them through MCP.
 
 ## Preferred Workflow
 
-Use TaskDev MCP tools for long-running tasks so humans and agents see the same
+Use TaskDev MCP tools for tasks so humans and agents see the same
 processes and logs.
 
 - `taskdev_list` - list tasks and current status.

@@ -40,7 +40,20 @@ function getMcpTargets() {
   return {
     windsurfGlobal: path.join(home, '.codeium', 'windsurf', 'mcp_config.json'),
     claudeGlobal:   path.join(home, '.claude.json'),
+    cursorGlobal:   path.join(home, '.cursor', 'mcp.json'),
   };
+}
+
+function workspaceTargetPath(kind) {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (!folder) return null;
+  if (kind === 'windsurf') return path.join(folder.uri.fsPath, '.windsurf', 'mcp.json');
+  if (kind === 'cursor') return path.join(folder.uri.fsPath, '.cursor', 'mcp.json');
+  return path.join(folder.uri.fsPath, '.mcp.json');
+}
+
+function mcpPick(label, detail, value, presencePath = detail) {
+  return { label, detail, value, picked: Boolean(presencePath && fs.existsSync(presencePath)) };
 }
 
 async function installMcpConfig() {
@@ -49,11 +62,13 @@ async function installMcpConfig() {
   const codexToml = path.join(home, '.codex', 'config.toml');
   const firstWorkspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || null;
   const options = [
-    { label: '$(globe) Windsurf (global)',     detail: t.windsurfGlobal, value: 'windsurf' },
-    { label: '$(github) Claude Code (global)', detail: t.claudeGlobal,   value: 'claude'   },
-    { label: '$(terminal) Codex (global)',     detail: codexToml,        value: 'codex'    },
-    { label: '$(file-code) Workspace .windsurf/mcp.json', detail: 'For Windsurf workspace-level config', value: 'ws-windsurf' },
-    { label: '$(file-code) Workspace .mcp.json',          detail: 'For Claude Code / Codex workspace',   value: 'ws-claude'   },
+    mcpPick('$(file-code) Windsurf (global)',     t.windsurfGlobal, 'windsurf', path.dirname(t.windsurfGlobal)),
+    mcpPick('$(file-code) Claude Code (global)',  t.claudeGlobal,   'claude'),
+    mcpPick('$(file-code) Cursor (global)',       t.cursorGlobal,   'cursor', path.dirname(t.cursorGlobal)),
+    mcpPick('$(file-code) Codex (global)',        codexToml,        'codex', path.dirname(codexToml)),
+    mcpPick('$(file-code) Workspace .windsurf/mcp.json', workspaceTargetPath('windsurf'), 'ws-windsurf', workspaceTargetPath('windsurf') && path.dirname(workspaceTargetPath('windsurf'))),
+    mcpPick('$(file-code) Workspace .mcp.json',          workspaceTargetPath('claude'),   'ws-claude'),
+    mcpPick('$(file-code) Workspace .cursor/mcp.json',   workspaceTargetPath('cursor'),   'ws-cursor', workspaceTargetPath('cursor') && path.dirname(workspaceTargetPath('cursor'))),
   ];
   const picks = await vscode.window.showQuickPick(options, {
     placeHolder: 'Choose MCP config targets to update',
@@ -86,16 +101,17 @@ async function installMcpConfig() {
         let target;
         if (pick.value === 'windsurf')    target = t.windsurfGlobal;
         else if (pick.value === 'claude') target = t.claudeGlobal;
+        else if (pick.value === 'cursor') target = t.cursorGlobal;
         else {
           const folders = vscode.workspace.workspaceFolders;
           if (!folders?.length) { errors.push(`${pick.label}: no workspace folder open`); continue; }
-          target = pick.value === 'ws-windsurf'
-            ? path.join(folders[0].uri.fsPath, '.windsurf', 'mcp.json')
-            : path.join(folders[0].uri.fsPath, '.mcp.json');
+          if (pick.value === 'ws-windsurf') target = workspaceTargetPath('windsurf');
+          else if (pick.value === 'ws-cursor') target = workspaceTargetPath('cursor');
+          else target = workspaceTargetPath('claude');
         }
         upsertJsonFile(target, obj => {
           if (!obj.mcpServers) obj.mcpServers = {};
-          const workspacePath = pick.value === 'ws-windsurf' || pick.value === 'ws-claude'
+          const workspacePath = pick.value === 'ws-windsurf' || pick.value === 'ws-claude' || pick.value === 'ws-cursor'
             ? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
             : firstWorkspace;
           obj.mcpServers['taskdev'] = getMcpEntry(workspacePath);
@@ -128,6 +144,66 @@ function maybePromptMcpInstallAfterUpdate(ctx) {
 
 let provider = null;
 
+function firstDetailLine(detail) {
+  return typeof detail === 'string' ? detail.split(/\r?\n/).map(s => s.trim()).find(Boolean) || '' : '';
+}
+
+function formatUptime(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+function inferTaskIcon(task) {
+  const text = `${task.name || ''} ${task.type || ''} ${task.command || ''}`.toLowerCase();
+  if (/\b(test|spec|check|verify)\b/.test(text)) return 'beaker';
+  if (/\b(build|bundle|pack|publish|compile)\b/.test(text)) return 'package';
+  if (/\b(dev|serve|server|start|watch)\b/.test(text)) return 'globe';
+  if (/\b(api|worker|service)\b/.test(text)) return 'server-process';
+  return 'terminal';
+}
+
+function defaultTaskIcon(task) {
+  const configured = vscode.workspace.getConfiguration('taskdev').get('defaultTaskIcon', 'auto');
+  const icon = typeof configured === 'string' ? configured.trim() : '';
+  if (!icon || icon === 'auto') return inferTaskIcon(task);
+  return icon;
+}
+
+function taskThemeIcon(task) {
+  const configured = task.icon;
+  const fallbackIcon = defaultTaskIcon(task);
+  const id = typeof configured === 'string'
+    ? configured
+    : typeof configured?.id === 'string'
+      ? configured.id
+      : fallbackIcon;
+  const color = typeof configured?.color === 'string'
+    ? configured.color
+    : task.status === 'running'
+      ? 'charts.green'
+      : null;
+  return color
+    ? new vscode.ThemeIcon(id, new vscode.ThemeColor(color))
+    : new vscode.ThemeIcon(id);
+}
+
+function taskTooltip(task) {
+  const lines = [];
+  lines.push(task.name);
+  if (task.detail) lines.push('', task.detail);
+  lines.push('', `status: ${task.status}`, `command: ${task.command}`, `cwd: ${task.cwd}`);
+  if (task.type) lines.push(`type: ${task.type}`);
+  if (task.pid) lines.push(`pid: ${task.pid}`);
+  if (task.uptimeMs) lines.push(`uptime: ${formatUptime(task.uptimeMs)}`);
+  if (task.logPath) lines.push(`log: ${task.logPath}`);
+  return lines.join('\n');
+}
+
 function resolveProjects() {
   const folders = vscode.workspace.workspaceFolders || [];
   const projects = [];
@@ -136,7 +212,7 @@ function resolveProjects() {
     if (!tasksFile) continue;
     const cfg = core.loadConfig(tasksFile);
     const projectName = (typeof cfg.project === 'string' && cfg.project.trim()) || f.name;
-    projects.push({ name: projectName, paths: core.pathsFor(tasksFile) });
+    projects.push({ name: projectName, paths: core.ensureRuntimeDirs(core.pathsFor(tasksFile)) });
   }
   return projects;
 }
@@ -145,48 +221,49 @@ class TreeProvider {
   constructor() {
     this._em = new vscode.EventEmitter();
     this.onDidChangeTreeData = this._em.event;
-    this._timer = setInterval(() => this._em.fire(), 2000);
+    this._projects = [];
+    this._rebuild(true);
+    this._timer = setInterval(() => this.refresh(true), 10000);
   }
   dispose() { clearInterval(this._timer); }
-  refresh() { this._em.fire(); }
+  refresh(reconcile = true) {
+    this._rebuild(reconcile);
+    this._em.fire();
+  }
+  _rebuild(reconcile) {
+    this._projects = resolveProjects().map(p => ({
+      kind: 'project',
+      ...p,
+      tasks: core.listTasks(p.paths, { reconcile }).map(t => ({ kind: 'task', _project: p, ...t })),
+    }));
+  }
   getChildren(elem) {
-    if (!elem) return resolveProjects().map(p => ({ kind: 'project', ...p }));
-    if (elem.kind === 'project') {
-      return core.listTasks(elem.paths).map(t => {
-        return { kind: 'task', _project: elem, ...t };
-      });
-    }
+    if (!elem) return this._projects;
+    if (elem.kind === 'project') return elem.tasks || [];
     return [];
   }
   getTreeItem(elem) {
     if (elem.kind === 'project') {
-      const tasks = this.getChildren(elem);
+      const tasks = elem.tasks || [];
       const running = tasks.filter(t => t.status === 'running').length;
       const item = new vscode.TreeItem(elem.name, vscode.TreeItemCollapsibleState.Expanded);
       item.description = tasks.length
         ? `${tasks.length} task${tasks.length === 1 ? '' : 's'}${running ? ` · ${running} running` : ''}`
         : '(no tasks)';
       item.tooltip = `${elem.paths.tasksFile}\n${tasks.length} tasks`;
-      item.iconPath = new vscode.ThemeIcon('folder');
+      item.iconPath = new vscode.ThemeIcon(running ? 'root-folder-opened' : 'root-folder');
       item.contextValue = 'project';
       return item;
     }
     const t = elem;
     const item = new vscode.TreeItem(t.name, vscode.TreeItemCollapsibleState.None);
+    const detail = firstDetailLine(t.detail);
     item.description = t.status === 'running'
-      ? `pid ${t.pid} · ${t.command}`
-      : t.command;
-    const lines = [t.command, `cwd: ${t.cwd}`, `status: ${t.status}`];
-    if (t.pid) lines.push(`pid: ${t.pid}`);
-    if (t.logPath) lines.push(`log: ${t.logPath}`);
-    if (t.uptimeMs) lines.push(`uptime: ${Math.round(t.uptimeMs / 1000)}s`);
-    item.tooltip = lines.join('\n');
+      ? `running${t.uptimeMs ? ` · ${formatUptime(t.uptimeMs)}` : ''}`
+      : detail;
+    item.tooltip = taskTooltip(t);
     item.contextValue = t.status;
-    item.iconPath = new vscode.ThemeIcon(
-      t.status === 'running' ? 'circle-filled' : 'circle-outline',
-      new vscode.ThemeColor(t.status === 'running' ? 'charts.green' : 'descriptionForeground'),
-    );
-    item.command = { command: 'taskdev.showLog', title: 'Show log', arguments: [t] };
+    item.iconPath = taskThemeIcon(t);
     return item;
   }
 }
@@ -230,7 +307,15 @@ function activate(ctx) {
     vscode.commands.registerCommand('taskdev.openTasksFile', async () => {
       const projects = resolveProjects();
       if (!projects.length) {
-        vscode.window.showInformationMessage('taskdev: no taskdev.json found in workspace');
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        if (!folder) {
+          vscode.window.showInformationMessage('taskdev: no workspace folder open');
+          return;
+        }
+        const created = core.createTasksFile(path.join(folder.uri.fsPath, 'taskdev.json'), folder.name);
+        provider.refresh();
+        const doc = await vscode.workspace.openTextDocument(created.tasksFile);
+        vscode.window.showTextDocument(doc);
         return;
       }
       const target = projects.length === 1

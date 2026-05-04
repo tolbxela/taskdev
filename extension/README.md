@@ -1,18 +1,18 @@
 # TaskDev
 
-TaskDev is a small **VS Code / Windsurf extension** for local dev tasks,
+TaskDev is a small **VS Code / Windsurf extension / Cursor extension** for local dev tasks,
 dev-server logs, and **MCP access for AI coding agents**.
 
 Start your API, frontend, worker, tunnel, or test watcher from the sidebar.
 Agents can use the same task list through MCP. You get one place for processes
 and one place for logs.
 
-TaskDev works with Codex, Claude Code, Windsurf Cascade, and other tools that
-support the Model Context Protocol.
+TaskDev works with Codex, Claude Code, Cursor, Windsurf Cascade, and other
+tools that support the Model Context Protocol.
 
 ## Why Use It
 
-- See long-running dev commands in the editor.
+- See running dev commands in the editor.
 - Start, stop, and restart tasks without searching through terminals.
 - Open task logs with one click.
 - Let agents read the same logs when they debug build or dev-server errors.
@@ -34,12 +34,20 @@ Create `taskdev.json` in your workspace root:
   "tasks": [
     {
       "name": "api",
-      "command": "dotnet run --project src/Api"
+      "command": "dotnet run --project src/Api",
+      "detail": "Starts the backend API",
+      "icon": "server-process"
     },
     {
       "name": "ui",
+      "type": "npm",
       "command": "npm run dev",
       "cwd": "ui",
+      "detail": "Starts the Vite dev server",
+      "icon": {
+        "id": "globe",
+        "color": "terminal.ansiBlue"
+      },
       "env": {
         "PORT": "5173"
       }
@@ -48,15 +56,15 @@ Create `taskdev.json` in your workspace root:
 }
 ```
 
-Open the **TaskDev** view from the Activity Bar. Your tasks show their status,
-command, PID, and log path.
+Open the **TaskDev** view from the Activity Bar. Your tasks show clean labels,
+icons, status, and useful hover details.
 
 See `examples/taskdev.json` for a minimal example.
 
 ## Daily Use
 
-- Click a task to open its log.
 - Use the play and stop buttons to control a task.
+- Use the log button to open task output.
 - Use refresh after editing `taskdev.json`.
 - Tasks can keep running after an editor reload.
 - Stop a task to stop its process tree.
@@ -90,6 +98,15 @@ Fields:
 | `command` | yes | Shell command to run. |
 | `cwd` | no | Relative to the task file directory, or absolute. |
 | `env` | no | Extra environment variables for the task process. |
+| `type` | no | Short category shown in tooltips, such as `npm` or `dotnet`. |
+| `detail` | no | Human-friendly description shown in the tree and tooltip. |
+| `icon` | no | VS Code codicon name, or `{ "id": "...", "color": "..." }`. |
+
+## Settings
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `taskdev.defaultTaskIcon` | `auto` | Fallback icon when a task does not define `icon`. Use `auto` for inferred icons, or set a codicon id like `file-code`. |
 
 ## MCP For Agents
 
@@ -98,7 +115,8 @@ you see in the sidebar.
 
 Run **TaskDev: Install MCP config** from the command palette. Choose the agent
 or config file you want to update. TaskDev only writes MCP config when you run
-this command.
+this command. Existing IDE config locations are preselected when TaskDev can
+detect them.
 
 After an extension upgrade, TaskDev may prompt you to review MCP configs so
 agents can point at the new extension path. Nothing is rewritten unless you

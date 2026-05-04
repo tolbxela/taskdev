@@ -33,6 +33,30 @@ async function withTempProjectAsync(fn) {
 }
 
 withTempProject(({ tasksFile }) => {
+  const paths = core.pathsFor(tasksFile);
+  assert.equal(fs.existsSync(path.join(path.dirname(tasksFile), '.taskdev')), false);
+
+  const ensured = core.ensureRuntimeDirs(paths);
+  assert.equal(ensured, paths);
+  assert.equal(fs.statSync(path.join(path.dirname(tasksFile), '.taskdev')).isDirectory(), true);
+  assert.equal(fs.statSync(paths.logsDir).isDirectory(), true);
+});
+
+withTempProject(({ dir }) => {
+  const tasksFile = path.join(dir, 'nested', 'taskdev.json');
+  const created = core.createTasksFile(tasksFile, 'Nested Project');
+
+  assert.equal(created.ok, true);
+  assert.equal(created.tasksFile, tasksFile);
+  assert.deepEqual(JSON.parse(fs.readFileSync(tasksFile, 'utf8')), {
+    project: 'Nested Project',
+    tasks: [],
+  });
+  assert.equal(fs.statSync(path.join(dir, 'nested', '.taskdev')).isDirectory(), true);
+  assert.equal(fs.statSync(created.paths.logsDir).isDirectory(), true);
+});
+
+withTempProject(({ tasksFile }) => {
   assert.deepEqual(core.validateTaskCommand('dotnet build', tasksFile), {
     ok: true,
     command: 'dotnet build',
@@ -56,6 +80,24 @@ withTempProject(({ tasksFile }) => {
   const missing = core.removeTask(tasksFile, 'build', { confirm: 'REMOVE build' });
   assert.equal(missing.ok, false);
   assert.equal(missing.error, 'unknown task');
+});
+
+withTempProject(({ tasksFile }) => {
+  fs.writeFileSync(tasksFile, JSON.stringify({
+    project: 'Test',
+    tasks: [{
+      name: 'build',
+      type: 'npm',
+      command: 'npm run build',
+      detail: 'Creates production build',
+      icon: { id: 'package', color: 'terminal.ansiGreen' },
+    }],
+  }, null, 2));
+
+  const [task] = core.listTasks(core.pathsFor(tasksFile));
+  assert.equal(task.type, 'npm');
+  assert.equal(task.detail, 'Creates production build');
+  assert.deepEqual(task.icon, { id: 'package', color: 'terminal.ansiGreen' });
 });
 
 withTempProject(({ tasksFile }) => {
@@ -91,6 +133,29 @@ withTempProject(({ tasksFile }) => {
   });
   const { state } = core.reconcile(core.readState(paths.stateFile));
   assert.equal(state.tasks.stale, undefined);
+});
+
+withTempProject(({ tasksFile }) => {
+  fs.writeFileSync(tasksFile, JSON.stringify({
+    project: 'Test',
+    tasks: [{ name: 'stale', command: 'dotnet build' }],
+  }, null, 2));
+  const paths = core.pathsFor(tasksFile);
+  core.writeState(paths.stateFile, {
+    tasks: {
+      stale: {
+        pid: 99999999,
+        command: 'dotnet build',
+        cwd: path.dirname(tasksFile),
+        startedAt: Date.now(),
+        status: 'running',
+      },
+    },
+  });
+
+  const [task] = core.listTasks(paths, { reconcile: false });
+  assert.equal(task.status, 'running');
+  assert.equal(task.pid, 99999999);
 });
 
 (async () => {

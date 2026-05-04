@@ -30,6 +30,26 @@ function pathsFor(tasksFile) {
   };
 }
 
+function ensureRuntimeDirs(paths) {
+  fs.mkdirSync(path.dirname(paths.stateFile), { recursive: true });
+  fs.mkdirSync(paths.logsDir, { recursive: true });
+  return paths;
+}
+
+function createTasksFile(tasksFile, projectName) {
+  if (!fs.existsSync(tasksFile)) {
+    fs.mkdirSync(path.dirname(tasksFile), { recursive: true });
+    const config = {
+      project: (typeof projectName === 'string' && projectName.trim()) || path.basename(path.dirname(tasksFile)),
+      tasks: [],
+    };
+    const tmp = tasksFile + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n');
+    fs.renameSync(tmp, tasksFile);
+  }
+  return { ok: true, tasksFile, paths: ensureRuntimeDirs(pathsFor(tasksFile)) };
+}
+
 function loadConfig(tasksFile) {
   if (!fs.existsSync(tasksFile)) return { tasks: [] };
   try { return JSON.parse(fs.readFileSync(tasksFile, 'utf8')) || { tasks: [] }; }
@@ -461,10 +481,14 @@ function restartTask(task, paths) {
   return startTask(task, paths);
 }
 
-function listTasks(paths) {
+function listTasks(paths, options = {}) {
   const tasks = loadTasks(paths.tasksFile);
-  const { state, changed } = reconcile(readState(paths.stateFile));
-  if (changed) { try { writeState(paths.stateFile, state); } catch { /* ignore */ } }
+  let state = readState(paths.stateFile);
+  if (options.reconcile !== false) {
+    const result = reconcile(state);
+    state = result.state;
+    if (result.changed) { try { writeState(paths.stateFile, state); } catch { /* ignore */ } }
+  }
   const now = Date.now();
   return tasks.map(t => {
     const e = state.tasks[t.name];
@@ -478,6 +502,9 @@ function listTasks(paths) {
       uptimeMs: e?.startedAt ? now - e.startedAt : null,
       source: e?.source ?? null,
       logPath: e?.logPath ?? logPathFor(paths, t.name),
+      type: typeof t.type === 'string' ? t.type : null,
+      detail: typeof t.detail === 'string' ? t.detail : null,
+      icon: typeof t.icon === 'string' || (t.icon && typeof t.icon === 'object') ? t.icon : null,
     };
   });
 }
@@ -500,7 +527,7 @@ function tailLog(paths, name, lines = 100) {
 
 module.exports = {
   TASK_NAME_RE, findTasksFile,
-  pathsFor, loadConfig, loadTasks, resolveCwd,
+  pathsFor, ensureRuntimeDirs, createTasksFile, loadConfig, loadTasks, resolveCwd,
   readState, writeState, isAlive, processFingerprint, reconcile, startTask, stopTask, restartTask, listTasks,
   logPathFor, tailLog, validateTaskCommand, validateNewTask, addTask, removeTask, loadConfigForWrite,
 };

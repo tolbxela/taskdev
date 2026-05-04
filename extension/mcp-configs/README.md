@@ -22,6 +22,11 @@ Merge [windsurf.json](windsurf.json) into
 `%USERPROFILE%\.codeium\windsurf\mcp_config.json` (Windows) or
 `~/.codeium/windsurf/mcp_config.json` (macOS/Linux).
 
+## Cursor
+
+Merge [cursor.json](cursor.json) into global `~/.cursor/mcp.json`, or into
+your workspace as `.cursor/mcp.json` for project-specific access.
+
 ## Codex extension
 
 Codex's MCP config format mirrors the Claude Code shape. Add an entry of the
