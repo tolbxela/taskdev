@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 
@@ -88,14 +89,27 @@ server.tool(
 
 server.tool(
   'taskdev_logs',
-  'Get the last N lines of a task log. Use this to diagnose build errors or runtime issues.',
+  'Get the last N lines of a task log. By default returns the current (most recent) run. Pass a file from taskdev_logs_history to read an older run.',
   {
     name: z.string().regex(core.TASK_NAME_RE),
     lines: z.number().int().min(1).max(500).default(100),
+    file: z.string().optional(),
   },
-  async ({ name, lines }) => {
-    const result = core.tailLog(paths, name, lines);
+  async ({ name, lines, file }) => {
+    const result = core.tailLog(paths, name, lines, file);
     return { content: [{ type: 'text', text: result.ok ? result.text : JSON.stringify(result) }] };
+  },
+);
+
+server.tool(
+  'taskdev_logs_history',
+  'List previous log files for a task (newest first). Pass file from a result back to taskdev_logs to fetch its contents.',
+  {
+    name: z.string().regex(core.TASK_NAME_RE),
+  },
+  async ({ name }) => {
+    const result = core.logHistory(paths, name);
+    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
   },
 );
 
@@ -110,6 +124,27 @@ server.tool(
     if (!t) return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: 'unknown task' }) }] };
     const result = core.restartTask(t, paths);
     return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  },
+);
+
+server.registerResource(
+  'taskdev-log',
+  new ResourceTemplate('taskdev://logs/{name}', {
+    list: async () => ({
+      resources: core.listTasks(paths).map(t => ({
+        uri: `taskdev://logs/${t.name}`,
+        name: `${t.name} log`,
+        description: `Current log for task "${t.name}" (${t.status}).`,
+        mimeType: 'text/plain',
+      })),
+    }),
+  }),
+  { description: 'Current log for a taskdev task.', mimeType: 'text/plain' },
+  async (uri, { name }) => {
+    if (!core.TASK_NAME_RE.test(name)) throw new Error('invalid task name');
+    const logPath = core.currentLogPath(paths, name);
+    const text = logPath && fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : '';
+    return { contents: [{ uri: uri.href, mimeType: 'text/plain', text }] };
   },
 );
 

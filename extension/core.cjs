@@ -170,7 +170,8 @@ function reconcile(state) {
   return { state, changed };
 }
 
-const LOG_ROTATE_BYTES = 50 * 1024 * 1024;
+const LOG_HISTORY_KEEP = 20;
+const LOG_FILE_RE = /^(.+)\.(\d{8}T\d{6}\d{3}Z)\.log$/;
 const ENV_DENYLIST = /^(PATH|PATHEXT|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_.*|NODE_OPTIONS)$/i;
 const SAFE_COMMAND_RE = /^[A-Za-z0-9_./:@%+=,\-\\ "']+$/;
 const BLOCKED_COMMANDS_BY_OS = {
@@ -364,20 +365,53 @@ function withStateLock(stateFile, fn) {
   try { return fn(); } finally { releaseLock(lockFile); }
 }
 
-function rotateLogIfNeeded(logPath) {
-  try {
-    const st = fs.statSync(logPath);
-    if (st.size > LOG_ROTATE_BYTES) {
-      const rotated = logPath + '.1';
-      try { fs.unlinkSync(rotated); } catch {}
-      fs.renameSync(logPath, rotated);
-    }
-  } catch {}
+function timestampSlug(date) {
+  const iso = (date || new Date()).toISOString();
+  return iso.replace(/[-:]/g, '').replace('.', '');
 }
 
 function logPathFor(paths, name) {
   if (!TASK_NAME_RE.test(name)) throw new Error('invalid task name');
   return path.join(paths.logsDir, `${name}.log`);
+}
+
+function newLogPath(paths, name, date) {
+  if (!TASK_NAME_RE.test(name)) throw new Error('invalid task name');
+  return path.join(paths.logsDir, `${name}.${timestampSlug(date)}.log`);
+}
+
+function listLogFiles(paths, name) {
+  if (!TASK_NAME_RE.test(name)) return [];
+  let entries;
+  try { entries = fs.readdirSync(paths.logsDir); } catch { return []; }
+  const out = [];
+  for (const file of entries) {
+    const m = LOG_FILE_RE.exec(file);
+    if (!m || m[1] !== name) continue;
+    const full = path.join(paths.logsDir, file);
+    let stat; try { stat = fs.statSync(full); } catch { continue; }
+    out.push({ file, path: full, size: stat.size, mtimeMs: stat.mtimeMs, startedAt: m[2] });
+  }
+  out.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return out;
+}
+
+function pruneOldLogs(paths, name, keep = LOG_HISTORY_KEEP) {
+  const files = listLogFiles(paths, name);
+  for (const f of files.slice(keep)) {
+    try { fs.unlinkSync(f.path); } catch {}
+  }
+}
+
+function currentLogPath(paths, name) {
+  if (!TASK_NAME_RE.test(name)) return null;
+  const state = readState(paths.stateFile);
+  const stateLog = state.tasks?.[name]?.logPath;
+  if (stateLog && fs.existsSync(stateLog)) return stateLog;
+  const files = listLogFiles(paths, name);
+  if (files.length) return files[0].path;
+  const legacy = logPathFor(paths, name);
+  return fs.existsSync(legacy) ? legacy : null;
 }
 
 function appendLog(logPath, message) {
@@ -399,13 +433,13 @@ function _startTaskLocked(task, paths) {
       status: 'running',
       alreadyRunning: true,
       pid: running.pid,
-      logPath: running.logPath || logPathFor(paths, task.name),
+      logPath: running.logPath || currentLogPath(paths, task.name) || logPathFor(paths, task.name),
     };
   }
   const cwd = resolveCwd(paths.tasksFile, task);
   fs.mkdirSync(paths.logsDir, { recursive: true });
-  const logPath = logPathFor(paths, task.name);
-  rotateLogIfNeeded(logPath);
+  const logPath = newLogPath(paths, task.name);
+  pruneOldLogs(paths, task.name);
   const fd = fs.openSync(logPath, 'a');
   const { env: safeEnv, blocked } = sanitizeEnv(task.env);
   fs.writeSync(fd, `\n[${new Date().toISOString()}] start: ${task.command} (cwd=${cwd})\n`);
@@ -501,7 +535,7 @@ function listTasks(paths, options = {}) {
       startedAt: e?.startedAt ?? null,
       uptimeMs: e?.startedAt ? now - e.startedAt : null,
       source: e?.source ?? null,
-      logPath: e?.logPath ?? logPathFor(paths, t.name),
+      logPath: e?.logPath ?? currentLogPath(paths, t.name) ?? logPathFor(paths, t.name),
       type: typeof t.type === 'string' ? t.type : null,
       detail: typeof t.detail === 'string' ? t.detail : null,
       icon: typeof t.icon === 'string' || (t.icon && typeof t.icon === 'object') ? t.icon : null,
@@ -509,12 +543,30 @@ function listTasks(paths, options = {}) {
   });
 }
 
-function tailLog(paths, name, lines = 100) {
+function resolveLogPath(paths, name, file) {
   if (!TASK_NAME_RE.test(name)) return { ok: false, error: 'invalid task name' };
-  const logPath = logPathFor(paths, name);
+  let logPath;
+  if (file) {
+    if (typeof file !== 'string' || file.includes('/') || file.includes('\\') || file.includes('..')) {
+      return { ok: false, error: 'invalid file' };
+    }
+    const m = LOG_FILE_RE.exec(file);
+    if (!m || m[1] !== name) return { ok: false, error: 'file does not belong to task' };
+    logPath = path.join(paths.logsDir, file);
+  } else {
+    logPath = currentLogPath(paths, name);
+    if (!logPath) return { ok: false, error: 'no log file found' };
+  }
   const rel = path.relative(paths.logsDir, logPath);
-  if (rel.startsWith('..') || path.isAbsolute(rel)) return { ok: false, error: 'invalid name' };
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return { ok: false, error: 'invalid path' };
   if (!fs.existsSync(logPath)) return { ok: false, error: 'no log file found' };
+  return { ok: true, logPath };
+}
+
+function tailLog(paths, name, lines = 100, file) {
+  const resolved = resolveLogPath(paths, name, file);
+  if (!resolved.ok) return resolved;
+  const { logPath } = resolved;
   const stat = fs.statSync(logPath);
   const cap = 256 * 1024;
   const start = Math.max(0, stat.size - cap);
@@ -525,9 +577,24 @@ function tailLog(paths, name, lines = 100) {
   return { ok: true, text: buf.toString('utf8').split('\n').slice(-lines).join('\n'), logPath };
 }
 
+function logHistory(paths, name) {
+  if (!TASK_NAME_RE.test(name)) return { ok: false, error: 'invalid task name' };
+  const files = listLogFiles(paths, name);
+  return {
+    ok: true,
+    logs: files.map(f => ({
+      file: f.file,
+      path: f.path,
+      size: f.size,
+      mtime: new Date(f.mtimeMs).toISOString(),
+    })),
+  };
+}
+
 module.exports = {
   TASK_NAME_RE, findTasksFile,
   pathsFor, ensureRuntimeDirs, createTasksFile, loadConfig, loadTasks, resolveCwd,
   readState, writeState, isAlive, processFingerprint, reconcile, startTask, stopTask, restartTask, listTasks,
-  logPathFor, tailLog, validateTaskCommand, validateNewTask, addTask, removeTask, loadConfigForWrite,
+  logPathFor, newLogPath, currentLogPath, listLogFiles, logHistory,
+  tailLog, validateTaskCommand, validateNewTask, addTask, removeTask, loadConfigForWrite,
 };

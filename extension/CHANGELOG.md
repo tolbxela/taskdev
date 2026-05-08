@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.16 - 2026-05-08
+
+- Each task start writes a fresh timestamped log file instead of appending to
+  one growing log; older runs auto-pruned (keeps last 20 per task).
+- MCP `taskdev_logs` now returns the current run by default (smaller payloads,
+  fewer tokens) and accepts an optional `file` to read a historical run.
+- Added MCP tool `taskdev_logs_history` and resource template
+  `taskdev://logs/{name}` for standards-compliant log access.
+- Tree-view log icon opens the active run's log (or most recent if stopped).
+- Adaptive refresh: 10 s when tasks are running, 60 s when idle or no
+  `taskdev.json` is present. Skip process reconciliation when no state file
+  exists. Workspace folders added at runtime now get a file-system watcher.
+
 ## 0.1.15 - 2026-05-04
 
 - Automatically create `taskdev.json` and `.taskdev/` runtime folders from the

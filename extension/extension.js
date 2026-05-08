@@ -212,30 +212,46 @@ function resolveProjects() {
     if (!tasksFile) continue;
     const cfg = core.loadConfig(tasksFile);
     const projectName = (typeof cfg.project === 'string' && cfg.project.trim()) || f.name;
-    projects.push({ name: projectName, paths: core.ensureRuntimeDirs(core.pathsFor(tasksFile)) });
+    projects.push({ name: projectName, paths: core.pathsFor(tasksFile) });
   }
   return projects;
 }
+
+const ACTIVE_REFRESH_MS = 10000;
+const IDLE_REFRESH_MS = 60 * 1000;
 
 class TreeProvider {
   constructor() {
     this._em = new vscode.EventEmitter();
     this.onDidChangeTreeData = this._em.event;
     this._projects = [];
+    this._timer = null;
+    this._timerInterval = 0;
     this._rebuild(true);
-    this._timer = setInterval(() => this.refresh(true), 10000);
+    this._scheduleTimer();
   }
-  dispose() { clearInterval(this._timer); }
+  dispose() { if (this._timer) clearInterval(this._timer); }
+  _scheduleTimer() {
+    const hasProjects = this._projects.length > 0;
+    const hasRunning = this._projects.some(p => p.tasks.some(t => t.status === 'running'));
+    const desired = !hasProjects ? IDLE_REFRESH_MS : (hasRunning ? ACTIVE_REFRESH_MS : IDLE_REFRESH_MS);
+    if (this._timer && this._timerInterval === desired) return;
+    if (this._timer) clearInterval(this._timer);
+    this._timerInterval = desired;
+    this._timer = setInterval(() => this.refresh(true), desired);
+  }
   refresh(reconcile = true) {
     this._rebuild(reconcile);
     this._em.fire();
+    this._scheduleTimer();
   }
   _rebuild(reconcile) {
-    this._projects = resolveProjects().map(p => ({
-      kind: 'project',
-      ...p,
-      tasks: core.listTasks(p.paths, { reconcile }).map(t => ({ kind: 'task', _project: p, ...t })),
-    }));
+    this._projects = resolveProjects().map(p => {
+      const hasState = fs.existsSync(p.paths.stateFile);
+      const tasks = core.listTasks(p.paths, { reconcile: reconcile && hasState })
+        .map(t => ({ kind: 'task', _project: p, ...t }));
+      return { kind: 'project', ...p, tasks };
+    });
   }
   getChildren(elem) {
     if (!elem) return this._projects;
@@ -270,8 +286,8 @@ class TreeProvider {
 
 function showLog(elem) {
   if (!elem || elem.kind !== 'task' || !core.TASK_NAME_RE.test(elem.name)) return;
-  const logPath = path.join(elem._project.paths.logsDir, `${elem.name}.log`);
-  if (!fs.existsSync(logPath)) {
+  const logPath = core.currentLogPath(elem._project.paths, elem.name);
+  if (!logPath || !fs.existsSync(logPath)) {
     vscode.window.showInformationMessage(`taskdev: no log yet for "${elem.name}"`);
     return;
   }
@@ -330,16 +346,27 @@ function activate(ctx) {
     }),
   );
 
-  for (const f of vscode.workspace.workspaceFolders || []) {
+  const watchers = new Map();
+  function watchFolder(f) {
+    if (watchers.has(f.uri.toString())) return;
     const watcher = vscode.workspace.createFileSystemWatcher(
       new vscode.RelativePattern(f, '{taskdev.json,.taskdev.json}')
     );
     watcher.onDidChange(() => provider.refresh());
     watcher.onDidCreate(() => provider.refresh());
     watcher.onDidDelete(() => provider.refresh());
+    watchers.set(f.uri.toString(), watcher);
     ctx.subscriptions.push(watcher);
   }
-  vscode.workspace.onDidChangeWorkspaceFolders(() => provider.refresh(), null, ctx.subscriptions);
+  for (const f of vscode.workspace.workspaceFolders || []) watchFolder(f);
+  vscode.workspace.onDidChangeWorkspaceFolders(e => {
+    for (const f of e.added) watchFolder(f);
+    for (const f of e.removed) {
+      const w = watchers.get(f.uri.toString());
+      if (w) { w.dispose(); watchers.delete(f.uri.toString()); }
+    }
+    provider.refresh();
+  }, null, ctx.subscriptions);
   maybePromptMcpInstallAfterUpdate(ctx);
 }
 
