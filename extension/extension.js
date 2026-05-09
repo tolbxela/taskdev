@@ -370,6 +370,13 @@ function activate(ctx) {
   maybePromptMcpInstallAfterUpdate(ctx);
 }
 
-function deactivate() {}
+function deactivate() {
+  for (const project of resolveProjects()) {
+    const state = core.readState(project.paths.stateFile);
+    for (const name of Object.keys(state.tasks || {})) {
+      try { core.stopTask(name, project.paths); } catch { /* ignore */ }
+    }
+  }
+}
 
 module.exports = { activate, deactivate };

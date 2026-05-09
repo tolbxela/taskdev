@@ -2,7 +2,7 @@
   "name": "taskdev",
   "displayName": "TaskDev",
   "description": "Manage long-running dev tasks from VS Code and MCP with shared process supervision, reliable start/stop, and file-backed logs for AI agents.",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "publisher": "tolbxela",
   "icon": "media/icon.png",
   "galleryBanner": {

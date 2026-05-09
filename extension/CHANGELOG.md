@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.17 - 2026-05-10
+
+- Extension now stops all running tasks on deactivate to prevent orphaned processes.
+- Expanded README with detailed sidebar UI description, icon resolution, and refresh cadence.
+- Added `docs/security-and-config.md` with comprehensive reference for allow-list, env rules, runtime layout, and MCP tools.
+
 ## 0.1.16 - 2026-05-08
 
 - Each task start writes a fresh timestamped log file instead of appending to
