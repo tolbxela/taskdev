@@ -56,18 +56,75 @@ Create `taskdev.json` in your workspace root:
 }
 ```
 
-Open the **TaskDev** view from the Activity Bar. Your tasks show clean labels,
-icons, status, and useful hover details.
+Open the **TaskDev** view from the Activity Bar. See `examples/taskdev.json`
+for a minimal example.
 
-See `examples/taskdev.json` for a minimal example.
+## The Sidebar
+
+The TaskDev view lives in the Activity Bar. It shows a tree of projects and
+tasks, refreshes itself while work is in progress, and reacts to edits in
+`taskdev.json`.
+
+### Layout
+
+- **Project rows** - one per workspace folder that has a `taskdev.json`.
+  The row description shows the task count and, when applicable, how many
+  are running (for example `3 tasks · 1 running`). The folder icon switches
+  to an "opened folder" style while something is running.
+- **Task rows** - one per entry in `tasks[]`.
+
+### What a task row shows
+
+- **Icon** - resolved in this order: the task's `icon`, then the
+  `taskdev.defaultTaskIcon` setting, then an inferred codicon based on the
+  name/command (`beaker` for test-like, `package` for build-like, `globe`
+  for dev/serve/watch, `server-process` for api/worker/service, `terminal`
+  otherwise). The icon turns green (`charts.green`) while the task is
+  running. `icon` may be either a codicon id string or
+  `{ "id": "...", "color": "..." }`.
+- **Label** - the task `name`.
+- **Description** - while running, `running` plus uptime
+  (`running · 12m`); otherwise the first non-empty line of `detail`.
+- **Tooltip** - name, `detail`, status, command, cwd, type, PID, uptime,
+  and log path.
+
+### Buttons on a task row (on hover)
+
+- **play** - visible when the task is stopped. Starts the command with the
+  current `env`/`cwd` from `taskdev.json`.
+- **stop** - visible when the task is running. Stops the whole process
+  tree (`taskkill /T /F` on Windows, `SIGTERM` to the process group
+  elsewhere).
+- **log** - opens the current log file. If the task has not produced any
+  log yet, a toast appears instead.
+
+### Buttons in the view title bar
+
+- **Install MCP config** - open the picker described in the MCP section
+  below.
+- **Open taskdev.json** - open the task file for the active project. If no
+  project has a task file yet, TaskDev creates one in the first workspace
+  folder and opens it.
+- **Refresh** - force a re-read of `taskdev.json` and a reconcile of
+  running PIDs.
+
+### Refresh cadence
+
+TaskDev refreshes the tree automatically:
+
+- every **10 seconds** while at least one task is running
+- every **60 seconds** otherwise
+- immediately when `taskdev.json` (or `.taskdev.json`) changes
+- on workspace folder add/remove
 
 ## Daily Use
 
-- Use the play and stop buttons to control a task.
-- Use the log button to open task output.
-- Use refresh after editing `taskdev.json`.
-- Tasks can keep running after an editor reload.
-- Stop a task to stop its process tree.
+- Edit `taskdev.json`. The sidebar updates on save.
+- Use the play and stop buttons to control individual tasks.
+- Use the log button to open the current task log; historical runs live in
+  `.taskdev/logs/<task>.<timestamp>.log` (kept: last 20 per task).
+- Use Refresh after manual edits outside the editor.
+- Stopping a task stops its whole process tree.
 
 TaskDev writes runtime files under your workspace:
 
@@ -128,13 +185,15 @@ MCP tools:
 - `taskdev_status` - get one task by name, or all tasks.
 - `taskdev_control` - start or stop a task.
 - `taskdev_restart` - stop and start a task.
-- `taskdev_logs` - read recent log lines.
+- `taskdev_logs` - read recent log lines from the current run, or from an older run via the `file` argument.
+- `taskdev_logs_history` - list previous log files for a task (newest first).
 - `taskdev_add` - add a restricted task with confirmation.
 - `taskdev_remove` - remove a stopped task with confirmation.
 
 Tasks added by agents are restricted. They require confirmation and only allow
-known dev command shapes such as `npm run`, `dotnet build/test/run`, `cargo`,
-and `go`.
+known dev command shapes: `npm` / `pnpm` / `yarn` run scripts,
+`dotnet run|watch|test|build`, `cargo run|test|build|watch`, and
+`go run|test|build`.
 
 ## Trust And Safety
 
@@ -145,7 +204,7 @@ For MCP-created tasks, TaskDev uses stricter checks:
 
 - no shell chaining, redirects, variables, or subshells
 - no path traversal or arguments outside the project
-- no risky env overrides like `PATH`, `NODE_OPTIONS`, `LD_*`, or `DYLD_*`
+- no risky env overrides: `PATH`, `PATHEXT`, `NODE_OPTIONS`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_*`
 - blocked risky executables across Windows, macOS, Linux, and common tools
 
 TaskDev does not collect telemetry. It does not open a network listener. See
