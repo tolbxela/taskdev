@@ -284,6 +284,112 @@ class TreeProvider {
   }
 }
 
+function foldersWithoutConfig() {
+  const folders = vscode.workspace.workspaceFolders || [];
+  return folders.filter(f => !core.findTasksFile(f.uri.fsPath, f.uri.fsPath));
+}
+
+async function createInFolder(folder, provider) {
+  const target = path.join(folder.uri.fsPath, 'taskdev.json');
+  const created = core.createTasksFile(target, folder.name);
+  provider.refresh();
+  const doc = await vscode.workspace.openTextDocument(created.tasksFile);
+  await vscode.window.showTextDocument(doc);
+  return created;
+}
+
+async function openOrCreateTasksFile(provider) {
+  const folders = vscode.workspace.workspaceFolders || [];
+  if (!folders.length) {
+    vscode.window.showInformationMessage('taskdev: no workspace folder open');
+    return;
+  }
+  const projects = resolveProjects();
+  const missing = foldersWithoutConfig();
+
+  // No projects yet: if exactly one folder, just create. Otherwise let the user pick.
+  if (!projects.length) {
+    if (folders.length === 1) {
+      await createInFolder(folders[0], provider);
+      return;
+    }
+    const pick = await vscode.window.showQuickPick(
+      folders.map(f => ({ label: `$(new-file) Create in folder: ${f.name}`, description: f.uri.fsPath, _folder: f })),
+      { placeHolder: 'Pick a folder for the new taskdev.json' },
+    );
+    if (pick) await createInFolder(pick._folder, provider);
+    return;
+  }
+
+  // Existing projects: list them, plus any folders that don't have a config yet.
+  const items = [
+    ...projects.map(p => ({ label: p.name, description: p.paths.tasksFile, _project: p })),
+    ...missing.map(f => ({ label: `$(new-file) Create in folder: ${f.name}`, description: f.uri.fsPath, _folder: f })),
+  ];
+
+  // If only one project and no candidates to create, skip the picker.
+  if (projects.length === 1 && !missing.length) {
+    const doc = await vscode.workspace.openTextDocument(projects[0].paths.tasksFile);
+    vscode.window.showTextDocument(doc);
+    return;
+  }
+
+  const pick = await vscode.window.showQuickPick(items, {
+    placeHolder: missing.length
+      ? 'Pick a project, or create taskdev.json in another folder'
+      : 'Pick a project',
+  });
+  if (!pick) return;
+  if (pick._folder) {
+    await createInFolder(pick._folder, provider);
+  } else {
+    const doc = await vscode.workspace.openTextDocument(pick._project.paths.tasksFile);
+    vscode.window.showTextDocument(doc);
+  }
+}
+
+async function createTasksFileInFolder(provider, folderArg) {
+  // folderArg is either a Uri (from Explorer context menu) or undefined (palette).
+  const folders = vscode.workspace.workspaceFolders || [];
+  if (!folders.length) {
+    vscode.window.showInformationMessage('taskdev: no workspace folder open');
+    return;
+  }
+
+  let folder = null;
+  if (folderArg && typeof folderArg === 'object' && folderArg.fsPath) {
+    folder = vscode.workspace.getWorkspaceFolder(folderArg);
+    if (!folder) {
+      vscode.window.showWarningMessage('taskdev: that path is not a workspace folder root');
+      return;
+    }
+  } else {
+    const candidates = foldersWithoutConfig();
+    if (!candidates.length) {
+      vscode.window.showInformationMessage('taskdev: every workspace folder already has a taskdev.json');
+      return;
+    }
+    if (candidates.length === 1) {
+      folder = candidates[0];
+    } else {
+      const pick = await vscode.window.showQuickPick(
+        candidates.map(f => ({ label: f.name, description: f.uri.fsPath, _folder: f })),
+        { placeHolder: 'Pick a folder for the new taskdev.json' },
+      );
+      if (!pick) return;
+      folder = pick._folder;
+    }
+  }
+
+  const target = path.join(folder.uri.fsPath, 'taskdev.json');
+  if (fs.existsSync(target)) {
+    const doc = await vscode.workspace.openTextDocument(target);
+    vscode.window.showTextDocument(doc);
+    return;
+  }
+  await createInFolder(folder, provider);
+}
+
 function showLog(elem) {
   if (!elem || elem.kind !== 'task' || !core.TASK_NAME_RE.test(elem.name)) return;
   const logPath = core.currentLogPath(elem._project.paths, elem.name);
@@ -320,30 +426,8 @@ function activate(ctx) {
     }),
     vscode.commands.registerCommand('taskdev.showLog', showLog),
     vscode.commands.registerCommand('taskdev.installMcp', installMcpConfig),
-    vscode.commands.registerCommand('taskdev.openTasksFile', async () => {
-      const projects = resolveProjects();
-      if (!projects.length) {
-        const folder = vscode.workspace.workspaceFolders?.[0];
-        if (!folder) {
-          vscode.window.showInformationMessage('taskdev: no workspace folder open');
-          return;
-        }
-        const created = core.createTasksFile(path.join(folder.uri.fsPath, 'taskdev.json'), folder.name);
-        provider.refresh();
-        const doc = await vscode.workspace.openTextDocument(created.tasksFile);
-        vscode.window.showTextDocument(doc);
-        return;
-      }
-      const target = projects.length === 1
-        ? projects[0]
-        : await vscode.window.showQuickPick(
-            projects.map(p => ({ label: p.name, description: p.paths.tasksFile, _p: p })),
-            { placeHolder: 'Pick a project' },
-          ).then(c => c?._p);
-      if (!target) return;
-      const doc = await vscode.workspace.openTextDocument(target.paths.tasksFile);
-      vscode.window.showTextDocument(doc);
-    }),
+    vscode.commands.registerCommand('taskdev.openTasksFile', () => openOrCreateTasksFile(provider)),
+    vscode.commands.registerCommand('taskdev.createTasksFile', folderArg => createTasksFileInFolder(provider, folderArg)),
   );
 
   const watchers = new Map();

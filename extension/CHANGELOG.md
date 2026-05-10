@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.18 - 2026-05-10
+
+- **Multi-root workspace UX:** the **Open taskdev.json** picker now also lists workspace folders that don't have a `taskdev.json`, with a one-click "Create in folder: …" entry. No more digging in the file tree to set up a second project.
+- **New command** `TaskDev: Create taskdev.json in folder…` — also available in the **Explorer right-click menu** on workspace folder roots.
+
 ## 0.1.17 - 2026-05-10
 
 - Extension now stops all running tasks on deactivate to prevent orphaned processes.
