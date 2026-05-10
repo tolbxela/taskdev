@@ -29,5 +29,45 @@ const { title, description } = Astro.props;
       </nav>
       <slot />
     </main>
+    <script is:inline>
+      function track(name, props) {
+        if (window.umami && typeof window.umami.track === 'function') {
+          props ? window.umami.track(name, props) : window.umami.track(name);
+        }
+      }
+      document.addEventListener('click', function (e) {
+        var t = e.target;
+        if (!t) return;
+        var copyBtn = t.closest && t.closest('.install-cmd');
+        if (copyBtn) {
+          var cmd = copyBtn.textContent.trim();
+          navigator.clipboard && navigator.clipboard.writeText(cmd).catch(function(){});
+          copyBtn.classList.add('copied');
+          setTimeout(function(){ copyBtn.classList.remove('copied'); }, 1200);
+          track('install-cmd-copy', { cmd: cmd.length > 60 ? cmd.slice(0, 60) : cmd });
+          return;
+        }
+        var a = t.closest && t.closest('a');
+        if (!a) return;
+        var href = a.getAttribute('href') || '';
+        if (href.indexOf('http') !== 0) return;
+        var host;
+        try { host = new URL(href).hostname; } catch (_) { return; }
+        if (host === location.hostname) return;
+        if (host === 'marketplace.visualstudio.com') {
+          track('install-click', { dest: 'vscode' });
+        } else if (host === 'open-vsx.org') {
+          track('install-click', { dest: 'ovsx' });
+        } else if (host === 'github.com') {
+          track('gh-click');
+        } else if (host === 'medium.com' || host === 'dev.to') {
+          track('writeup-click', { dest: host === 'medium.com' ? 'medium' : 'devto' });
+        } else if (host === 'tolbxela.com') {
+          track('author-click');
+        } else {
+          track('outbound-click', { host: host });
+        }
+      });
+    </script>
   </body>
 </html>
