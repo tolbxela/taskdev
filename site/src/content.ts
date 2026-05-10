@@ -5,7 +5,7 @@ export const subline = "A small VS Code extension that gives MCP-enabled agents 
 export const features = [
   {
     title: "One sidebar, all your tasks",
-    body: "Long-running servers, watchers, build steps — defined in plain JSON, started and stopped from a tree view in VS Code, Cursor, or Windsurf.",
+    body: "Long-running servers, watchers, build steps - defined in plain JSON, started and stopped from a tree view in VS Code, Cursor, or Windsurf.",
   },
   {
     title: "Logs your agent can actually read",
@@ -13,7 +13,7 @@ export const features = [
   },
   {
     title: "MCP control the agent can trust",
-    body: "Eight tools — list, status, control, restart, logs, history, add, remove. Agent-added commands are sandboxed: no shell chaining, no traversal, only known dev-command shapes.",
+    body: "Eight tools - list, status, control, restart, logs, history, add, remove. Agent-added commands are sandboxed: no shell chaining, no traversal, only known dev-command shapes.",
   },
   {
     title: "Local. No telemetry.",

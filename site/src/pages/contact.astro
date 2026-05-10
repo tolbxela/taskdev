@@ -1,0 +1,28 @@
+---
+import Base from '../layouts/Base.astro';
+import ContactForm from '../components/ContactForm.astro';
+---
+<Base
+  title="Contact · TaskDev"
+  description="Like the extension? Have an idea, or want me to build a VS Code extension for you? Drop a line."
+>
+  <article class="prose">
+    <h1>Contact</h1>
+    <p class="muted">
+      Like the extension? Have an idea, or want me to build a VS Code extension for you?
+      Tell me a bit and I&rsquo;ll reply.
+    </p>
+
+    <ContactForm
+      subject="taskdev.dev - feedback / request"
+      fromName="taskdev.dev"
+    />
+
+    <p style="margin-top:2.5rem"><a href="/">&larr; back to taskdev.dev</a></p>
+  </article>
+
+  <footer>
+    <span>MIT &middot; built by <a href="https://tolbxela.com">tolbxela</a></span>
+    <span><a href="/privacy">Privacy</a></span>
+  </footer>
+</Base>

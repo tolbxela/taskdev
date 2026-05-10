@@ -1,0 +1,26 @@
+{
+  "project": "taskdev.dev (site)",
+  "tasks": [
+    {
+      "name": "dev",
+      "type": "npm",
+      "command": "npm run dev",
+      "detail": "Astro dev server with HMR",
+      "icon": "globe"
+    },
+    {
+      "name": "preview",
+      "type": "npm",
+      "command": "npm run preview",
+      "detail": "Serve dist/ as it would be on Pages",
+      "icon": "eye"
+    },
+    {
+      "name": "build",
+      "type": "npm",
+      "command": "npm run build",
+      "detail": "One-shot static build → dist/",
+      "icon": "tools"
+    }
+  ]
+}
