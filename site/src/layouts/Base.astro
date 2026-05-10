@@ -1,0 +1,32 @@
+---
+import '../styles/base.css';
+const { title, description } = Astro.props;
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta name="theme-color" content="#0a0c10" />
+    <link rel="sitemap" href="/sitemap-index.xml" />
+    <script defer src="https://cloud.umami.is/script.js" data-website-id="d29e43b1-e2e8-4b77-8cdb-b91899ca8f55"></script>
+  </head>
+  <body>
+    <main>
+      <nav class="nav">
+        <a href="/" class="logo">taskdev<span class="accent">.dev</span></a>
+        <div class="links">
+          <a href="https://github.com/tolbxela/taskdev">GitHub</a>
+          <a href="https://marketplace.visualstudio.com/items?itemName=Tolbxela.taskdev">VS Code</a>
+          <a href="https://open-vsx.org/extension/tolbxela/taskdev">Open VSX</a>
+        </div>
+      </nav>
+      <slot />
+    </main>
+  </body>
+</html>

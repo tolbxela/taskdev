@@ -1,0 +1,95 @@
+---
+import Base from '../layouts/Base.astro';
+import { links, installVscode, installInEditor } from '../content';
+---
+<Base
+  title="TaskDev — task runner for AI coding agents (MCP)"
+  description="A small VS Code extension that gives MCP-enabled agents like Claude Code, Cursor, and Windsurf a real handle on your dev processes."
+>
+  <section class="hero">
+    <div class="hero-meta">
+      <span class="pulse"></span>
+      <span>v1 · MIT · MCP-native · VS Code · Cursor · Windsurf</span>
+    </div>
+
+    <h1>
+      One place for your dev tasks.<br/>
+      One place for your logs.<br/>
+      <span class="accent">And your AI agent sees them too.</span>
+    </h1>
+
+    <p class="sub">
+      A small VS Code extension that gives MCP-enabled agents — Claude Code, Cursor, Windsurf —
+      a real handle on your long-running dev processes. Start, stop, restart, read logs.
+      No hidden terminals. No retry loops.
+    </p>
+
+    <div class="terminal" aria-hidden="true">
+      <div class="terminal-bar">
+        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+        <span class="title">claude code  ·  mcp: taskdev</span>
+      </div>
+      <div class="terminal-body"><span class="line"><span class="info">user</span> <span class="dim">›</span> <span class="cmd">build the site and tell me if it works</span></span><span class="line"><span class="ok">claude</span> <span class="dim">›</span> <span class="out">checking tasks…</span></span><span class="line"><span class="info">[mcp]</span> <span class="out">taskdev_list  → </span><span class="ok">build</span><span class="out"> stopped, </span><span class="ok">dev</span><span class="out"> stopped, </span><span class="ok">preview</span><span class="out"> stopped</span></span><span class="line"><span class="info">[mcp]</span> <span class="out">taskdev_control start build  → </span><span class="ok">started</span><span class="out"> pid 18472</span></span><span class="line"><span class="info">[mcp]</span> <span class="out">taskdev_logs build --lines 6</span></span><span class="line"><span class="dim">[build]</span> <span class="out">Building static entrypoints…</span></span><span class="line"><span class="dim">[vite]</span> <span class="ok">✓ built in 2.51s</span></span><span class="line"><span class="dim">[build]</span> <span class="out">4 page(s) built in 3.18s</span></span><span class="line"><span class="dim">[build]</span> <span class="ok">Complete!</span></span><span class="line"><span class="ok">claude</span> <span class="dim">›</span> <span class="out">build green — 4 pages in 3.18s</span><span class="cursor"></span></span></div>
+    </div>
+
+    <div class="cta">
+      <a class="btn primary" href={links.vscode}>Install for VS Code <span class="arrow">→</span></a>
+      <a class="btn" href={links.ovsx}>Open VSX (Cursor / Windsurf)</a>
+      <a class="btn" href={links.github}>GitHub <span class="arrow">↗</span></a>
+    </div>
+
+    <div class="installs">
+      <div class="install-row">
+        <div class="install-label">VS Code CLI</div>
+        <div class="install-cmd">{installVscode}</div>
+      </div>
+      <div class="install-row">
+        <div class="install-label">Or in-editor</div>
+        <div class="install-cmd-plain">{installInEditor}</div>
+      </div>
+    </div>
+    <p class="muted" style="font-size:.85rem; margin-top:-2.5rem; margin-bottom:3.5rem">
+      Then drop a <code>taskdev.json</code> in your workspace and run
+      <code>TaskDev: Install MCP config</code> from the command palette to wire up your agent.
+    </p>
+  </section>
+
+  <section>
+    <div class="section-head"><h2>// what it does</h2><span class="rule"></span></div>
+    <div class="features">
+      <article>
+        <div class="key">task.list</div>
+        <h3>One sidebar, all your tasks</h3>
+        <p>Long-running servers, watchers, build steps — defined in plain JSON. Started and stopped from a tree view in VS Code, Cursor, or Windsurf.</p>
+      </article>
+      <article>
+        <div class="key">task.logs</div>
+        <h3>Logs your agent can actually read</h3>
+        <p>Every task writes to a real file. Your editor opens it; the agent reads the same file over MCP. No hidden terminals, no scraped output.</p>
+      </article>
+      <article>
+        <div class="key">mcp.tools</div>
+        <h3>Eight MCP tools, sandboxed</h3>
+        <p>list, status, control, restart, logs, history, add, remove. Agent-added commands are sandboxed: no shell chaining, no traversal, only known dev shapes.</p>
+      </article>
+      <article>
+        <div class="key">privacy.local</div>
+        <h3>Local. No telemetry.</h3>
+        <p>Tasks run as local processes. Logs stay on disk. Nothing is shipped anywhere. MIT-licensed, source on GitHub.</p>
+      </article>
+    </div>
+  </section>
+
+  <section class="writeup">
+    <div class="section-head"><h2>// read the write-up</h2><span class="rule"></span></div>
+    <p>
+      The story behind TaskDev — the agent problem and how MCP fixes it — on
+      <a href={links.medium}>Medium</a> and <a href={links.devto}>dev.to</a>.
+    </p>
+  </section>
+
+  <footer>
+    <span>MIT &middot; built by <a href={links.author}>tolbxela</a></span>
+    <span><a href="/privacy">privacy</a></span>
+  </footer>
+</Base>

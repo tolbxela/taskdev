@@ -1,0 +1,55 @@
+---
+import Base from '../layouts/Base.astro';
+---
+<Base
+  title="Privacy · TaskDev"
+  description="Privacy policy for taskdev.dev"
+>
+  <article class="prose">
+    <h1>Privacy</h1>
+    <p class="muted">What this site collects, in plain terms.</p>
+
+    <h2>Analytics</h2>
+    <p>
+      This site uses <a href="https://umami.is/">Umami</a> for anonymous, aggregated visit
+      statistics. Umami does not use cookies, does not collect personal data, and does not
+      store full IP addresses. Data is hosted by Umami Cloud.
+    </p>
+
+    <h2>Cookies</h2>
+    <p>This site does not set any cookies.</p>
+
+    <h2>Hosting</h2>
+    <p>
+      The site is hosted on GitHub Pages. GitHub may log requests (IP, user agent, referrer)
+      for security and abuse prevention as described in the
+      <a href="https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement">GitHub privacy statement</a>.
+    </p>
+
+    <h2>The TaskDev extension</h2>
+    <p>
+      The extension itself runs entirely on your machine. Tasks run as local processes, logs
+      stay on disk, and TaskDev does not phone home or send any telemetry.
+    </p>
+
+    <h2>Contact</h2>
+    <p>For privacy questions, email <a class="mail" href="#" data-u="admin" data-h="tolbxela.com" rel="noopener">email</a>.</p>
+
+    <p style="margin-top:2.5rem"><a href="/">← back to taskdev.dev</a></p>
+  </article>
+
+  <footer>
+    <span>MIT &middot; built by <a href="https://tolbxela.com">tolbxela</a></span>
+    <span><a href="/privacy">privacy</a></span>
+  </footer>
+
+  <script is:inline>
+    document.querySelectorAll('a.mail').forEach(function (a) {
+      var u = a.getAttribute('data-u'), h = a.getAttribute('data-h');
+      if (!u || !h) return;
+      var addr = u + '@' + h;
+      a.setAttribute('href', 'mailto:' + addr);
+      a.textContent = addr;
+    });
+  </script>
+</Base>
