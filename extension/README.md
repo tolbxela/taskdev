@@ -1,5 +1,7 @@
 # TaskDev
 
+**Site: [taskdev.dev](https://taskdev.dev)**
+
 TaskDev is a small **VS Code / Windsurf extension / Cursor extension** for local dev tasks,
 dev-server logs, and **MCP access for AI coding agents**.
 
