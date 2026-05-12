@@ -3,12 +3,39 @@
   "tasks": [
     {
       "name": "compile-extension",
-      "command": "node scripts/package-vsix.cjs"
+      "command": "node scripts/package-vsix.cjs",
+      "category": "Extension"
     },
     {
       "name": "log-smoke",
       "command": "npm run log-smoke",
-      "cwd": "extension"
+      "cwd": "extension",
+      "category": "Extension"
+    },
+    {
+      "name": "site-dev",
+      "command": "npm run dev",
+      "cwd": "site",
+      "env": {
+        "PORT": "4322"
+      },
+      "openBrowser": true,
+      "category": "Web Site"
+    },
+    {
+      "name": "site-build",
+      "command": "npm run build",
+      "cwd": "site",
+      "category": "Web Site"
+    },
+    {
+      "name": "site-preview",
+      "command": "npm run preview",
+      "cwd": "site",
+      "env": {
+        "PORT": "4322"
+      },
+      "category": "Web Site"
     }
   ]
 }

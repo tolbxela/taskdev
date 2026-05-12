@@ -56,6 +56,40 @@ withTempProject(({ dir }) => {
   assert.equal(fs.statSync(created.paths.logsDir).isDirectory(), true);
 });
 
+// discoverProjects: multi-root, name from config or folder, dedup, disambiguation.
+{
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'taskdev-multi-'));
+  try {
+    const a = path.join(root, 'alpha');
+    const b = path.join(root, 'beta');
+    const c = path.join(root, 'gamma');
+    const d = path.join(root, 'delta');
+    fs.mkdirSync(a); fs.mkdirSync(b); fs.mkdirSync(c); fs.mkdirSync(d);
+    fs.writeFileSync(path.join(a, 'taskdev.json'), JSON.stringify({ project: 'AlphaApp', tasks: [] }));
+    fs.writeFileSync(path.join(b, 'taskdev.json'), JSON.stringify({ tasks: [] })); // no project name -> folder
+    fs.writeFileSync(path.join(c, 'taskdev.json'), JSON.stringify({ project: 'Shared', tasks: [] }));
+    fs.writeFileSync(path.join(d, 'taskdev.json'), JSON.stringify({ project: 'Shared', tasks: [] }));
+    // no taskdev.json in 'epsilon'
+    const epsilon = path.join(root, 'epsilon');
+    fs.mkdirSync(epsilon);
+
+    const projects = core.discoverProjects([a, b, c, d, epsilon, a /* dup */]);
+    assert.equal(projects.length, 4);
+    const byName = Object.fromEntries(projects.map(p => [p.name, p]));
+    assert.ok(byName['AlphaApp']);
+    assert.ok(byName['beta']);
+    // collision: both 'Shared' get disambiguated.
+    assert.equal(projects.filter(p => p.name === 'Shared').length, 0);
+    assert.equal(projects.filter(p => p.name.startsWith('Shared (')).length, 2);
+
+    // empty / bogus inputs return empty.
+    assert.deepEqual(core.discoverProjects([]), []);
+    assert.deepEqual(core.discoverProjects(['', null, undefined]), []);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+}
+
 withTempProject(({ tasksFile }) => {
   assert.deepEqual(core.validateTaskCommand('dotnet build', tasksFile), {
     ok: true,

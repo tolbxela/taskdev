@@ -539,6 +539,7 @@ function listTasks(paths, options = {}) {
       type: typeof t.type === 'string' ? t.type : null,
       detail: typeof t.detail === 'string' ? t.detail : null,
       icon: typeof t.icon === 'string' || (t.icon && typeof t.icon === 'object') ? t.icon : null,
+      category: typeof t.category === 'string' && t.category.trim() ? t.category.trim() : null,
     };
   });
 }
@@ -591,10 +592,49 @@ function logHistory(paths, name) {
   };
 }
 
+const PROJECT_NAME_RE = /^[A-Za-z0-9_.\- ]{1,64}$/;
+
+function sanitizeProjectName(name, fallback) {
+  if (typeof name === 'string') {
+    const trimmed = name.trim();
+    if (trimmed && PROJECT_NAME_RE.test(trimmed)) return trimmed;
+  }
+  return fallback;
+}
+
+function discoverProjects(roots) {
+  const list = Array.isArray(roots) ? roots : [];
+  const seen = new Set();
+  const projects = [];
+  for (const raw of list) {
+    if (typeof raw !== 'string' || !raw.trim()) continue;
+    const root = path.resolve(raw);
+    const tasksFile = findTasksFile(root, root);
+    if (!tasksFile) continue;
+    if (seen.has(tasksFile)) continue;
+    seen.add(tasksFile);
+    const cfg = loadConfig(tasksFile);
+    const fallback = path.basename(path.dirname(tasksFile));
+    const name = sanitizeProjectName(cfg.project, fallback);
+    projects.push({ name, root, tasksFile, paths: pathsFor(tasksFile) });
+  }
+  // Disambiguate duplicate names by appending " (folder)".
+  const counts = new Map();
+  for (const p of projects) counts.set(p.name, (counts.get(p.name) || 0) + 1);
+  for (const p of projects) {
+    if (counts.get(p.name) > 1) {
+      const folder = path.basename(path.dirname(p.tasksFile));
+      if (folder !== p.name) p.name = `${p.name} (${folder})`;
+    }
+  }
+  return projects;
+}
+
 module.exports = {
-  TASK_NAME_RE, findTasksFile,
+  TASK_NAME_RE, PROJECT_NAME_RE, findTasksFile,
   pathsFor, ensureRuntimeDirs, createTasksFile, loadConfig, loadTasks, resolveCwd,
   readState, writeState, isAlive, processFingerprint, reconcile, startTask, stopTask, restartTask, listTasks,
   logPathFor, newLogPath, currentLogPath, listLogFiles, logHistory,
   tailLog, validateTaskCommand, validateNewTask, addTask, removeTask, loadConfigForWrite,
+  discoverProjects, sanitizeProjectName,
 };

@@ -10,20 +10,104 @@ const require = createRequire(import.meta.url);
 const core = require('./core.cjs');
 const pkg = require('./package.json');
 
-const ws = process.env.TASKDEV_WORKSPACE;
-const workspaceRoot = path.resolve(ws || process.cwd());
-const tasksFile =
-  core.findTasksFile(workspaceRoot, workspaceRoot) ||
-  path.join(workspaceRoot, 'taskdev.json');
-const paths = core.pathsFor(tasksFile);
+// ---- workspace discovery ---------------------------------------------------
+// Roots are sourced from (in priority order, merged):
+//   1. TASKDEV_WORKSPACES_FILE — JSON file with { roots: [string,...] } or [string,...].
+//      Re-read on every tool call so the VS Code extension can update it when
+//      workspace folders are added or removed without restarting the MCP host.
+//   2. TASKDEV_WORKSPACE — single path or list separated by ';' or path.delimiter.
+//      Kept for backward compatibility with single-folder installs.
+//   3. process.cwd() — final fallback.
+
+function splitRoots(value) {
+  if (typeof value !== 'string' || !value.trim()) return [];
+  // Prefer ';' which is unambiguous on all platforms (Windows drive letters
+  // make ':' unsafe to split on).
+  const parts = value.includes(';')
+    ? value.split(';')
+    : process.platform === 'win32' ? [value] : value.split(path.delimiter);
+  return parts.map(s => s.trim()).filter(Boolean);
+}
+
+function readRootsFile(file) {
+  if (!file) return [];
+  try {
+    const raw = fs.readFileSync(file, 'utf8');
+    const parsed = JSON.parse(raw);
+    const roots = Array.isArray(parsed) ? parsed
+      : Array.isArray(parsed?.roots) ? parsed.roots
+      : [];
+    return roots.filter(r => typeof r === 'string' && r.trim());
+  } catch {
+    return [];
+  }
+}
+
+function currentProjects() {
+  const fromFile = readRootsFile(process.env.TASKDEV_WORKSPACES_FILE);
+  const fromEnv = splitRoots(process.env.TASKDEV_WORKSPACE);
+  const roots = [...fromFile, ...fromEnv];
+  if (!roots.length) roots.push(process.cwd());
+  return core.discoverProjects(roots);
+}
+
+function selectProject(projects, requested) {
+  if (!projects.length) return { ok: false, error: 'no taskdev.json found in any configured workspace folder' };
+  if (requested) {
+    const match = projects.find(p => p.name === requested);
+    if (!match) {
+      return {
+        ok: false,
+        error: `unknown project "${requested}". available: ${projects.map(p => p.name).join(', ')}`,
+      };
+    }
+    return { ok: true, project: match };
+  }
+  if (projects.length === 1) return { ok: true, project: projects[0] };
+  return {
+    ok: false,
+    error: `multiple projects available, specify project: ${projects.map(p => p.name).join(', ')}`,
+  };
+}
+
+function errResult(message) {
+  return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: message }) }] };
+}
+
+function jsonResult(value) {
+  return { content: [{ type: 'text', text: JSON.stringify(value) }] };
+}
+
+// ---- server ----------------------------------------------------------------
 
 const server = new McpServer({ name: 'taskdev', version: pkg.version });
 
+const projectParam = z.string().regex(core.PROJECT_NAME_RE).optional()
+  .describe('Project name (taskdev.json "project" field or folder name). Required when multiple projects are available; call taskdev_projects to list them.');
+
+server.tool(
+  'taskdev_projects',
+  'List taskdev projects discovered across all configured workspace folders.',
+  {},
+  async () => {
+    const projects = currentProjects();
+    return jsonResult(projects.map(p => ({
+      name: p.name,
+      tasksFile: p.tasksFile,
+      root: p.root,
+    })));
+  },
+);
+
 server.tool(
   'taskdev_list',
-  'List defined taskdev tasks with status and pid.',
-  {},
-  async () => ({ content: [{ type: 'text', text: JSON.stringify(core.listTasks(paths)) }] }),
+  'List defined taskdev tasks with status and pid. Pass project to disambiguate in multi-project workspaces.',
+  { project: projectParam },
+  async ({ project }) => {
+    const sel = selectProject(currentProjects(), project);
+    if (!sel.ok) return errResult(sel.error);
+    return jsonResult(core.listTasks(sel.project.paths));
+  },
 );
 
 server.tool(
@@ -31,11 +115,14 @@ server.tool(
   'Get status for one task, or all tasks when name is omitted.',
   {
     name: z.string().regex(core.TASK_NAME_RE).optional(),
+    project: projectParam,
   },
-  async ({ name }) => {
-    const tasks = core.listTasks(paths);
+  async ({ name, project }) => {
+    const sel = selectProject(currentProjects(), project);
+    if (!sel.ok) return errResult(sel.error);
+    const tasks = core.listTasks(sel.project.paths);
     const result = name ? (tasks.find(t => t.name === name) || { ok: false, error: 'unknown task' }) : tasks;
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    return jsonResult(result);
   },
 );
 
@@ -45,8 +132,12 @@ server.tool(
   {
     action: z.enum(['start', 'stop']),
     name: z.string().regex(core.TASK_NAME_RE),
+    project: projectParam,
   },
-  async ({ action, name }) => {
+  async ({ action, name, project }) => {
+    const sel = selectProject(currentProjects(), project);
+    if (!sel.ok) return errResult(sel.error);
+    const paths = sel.project.paths;
     let result;
     if (action === 'start') {
       const t = core.loadTasks(paths.tasksFile).find(x => x.name === name);
@@ -54,36 +145,42 @@ server.tool(
     } else {
       result = core.stopTask(name, paths);
     }
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    return jsonResult(result);
   },
 );
 
 server.tool(
   'taskdev_add',
-  'Add a safe new task to the current project taskdev.json. Requires confirm to equal ADD <name>.',
+  'Add a safe new task to the selected project taskdev.json. Requires confirm to equal ADD <name>.',
   {
     name: z.string().regex(core.TASK_NAME_RE),
     command: z.string().min(1).max(300),
     cwd: z.string().optional(),
     env: z.record(z.string()).optional(),
     confirm: z.string(),
+    project: projectParam,
   },
-  async ({ name, command, cwd, env, confirm }) => {
-    const result = core.addTask(paths.tasksFile, { name, command, cwd, env }, { confirm });
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  async ({ name, command, cwd, env, confirm, project }) => {
+    const sel = selectProject(currentProjects(), project);
+    if (!sel.ok) return errResult(sel.error);
+    const result = core.addTask(sel.project.paths.tasksFile, { name, command, cwd, env }, { confirm });
+    return jsonResult(result);
   },
 );
 
 server.tool(
   'taskdev_remove',
-  'Remove a task from the current project taskdev.json. Requires confirm to equal REMOVE <name>.',
+  'Remove a task from the selected project taskdev.json. Requires confirm to equal REMOVE <name>.',
   {
     name: z.string().regex(core.TASK_NAME_RE),
     confirm: z.string(),
+    project: projectParam,
   },
-  async ({ name, confirm }) => {
-    const result = core.removeTask(paths.tasksFile, name, { confirm });
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  async ({ name, confirm, project }) => {
+    const sel = selectProject(currentProjects(), project);
+    if (!sel.ok) return errResult(sel.error);
+    const result = core.removeTask(sel.project.paths.tasksFile, name, { confirm });
+    return jsonResult(result);
   },
 );
 
@@ -94,10 +191,16 @@ server.tool(
     name: z.string().regex(core.TASK_NAME_RE),
     lines: z.number().int().min(1).max(500).default(100),
     file: z.string().optional(),
+    project: projectParam,
   },
-  async ({ name, lines, file }) => {
-    const result = core.tailLog(paths, name, lines, file);
-    return { content: [{ type: 'text', text: result.ok ? result.text : JSON.stringify(result) }] };
+  async ({ name, lines, file, project }) => {
+    const sel = selectProject(currentProjects(), project);
+    if (!sel.ok) return errResult(sel.error);
+    const result = core.tailLog(sel.project.paths, name, lines, file);
+    // Return the raw log text on success. Agents that need structure can
+    // call taskdev_logs_history first; this tool is optimized for tokens.
+    if (result.ok) return { content: [{ type: 'text', text: result.text }] };
+    return errResult(result.error || 'log read failed');
   },
 );
 
@@ -106,10 +209,12 @@ server.tool(
   'List previous log files for a task (newest first). Pass file from a result back to taskdev_logs to fetch its contents.',
   {
     name: z.string().regex(core.TASK_NAME_RE),
+    project: projectParam,
   },
-  async ({ name }) => {
-    const result = core.logHistory(paths, name);
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  async ({ name, project }) => {
+    const sel = selectProject(currentProjects(), project);
+    if (!sel.ok) return errResult(sel.error);
+    return jsonResult(core.logHistory(sel.project.paths, name));
   },
 );
 
@@ -118,31 +223,55 @@ server.tool(
   'Stop and restart a task by name.',
   {
     name: z.string().regex(core.TASK_NAME_RE),
+    project: projectParam,
   },
-  async ({ name }) => {
+  async ({ name, project }) => {
+    const sel = selectProject(currentProjects(), project);
+    if (!sel.ok) return errResult(sel.error);
+    const paths = sel.project.paths;
     const t = core.loadTasks(paths.tasksFile).find(x => x.name === name);
-    if (!t) return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: 'unknown task' }) }] };
-    const result = core.restartTask(t, paths);
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    if (!t) return jsonResult({ ok: false, error: 'unknown task' });
+    return jsonResult(core.restartTask(t, paths));
   },
 );
 
+// Log resource. Single-project: taskdev://logs/{name}. Multi-project:
+// taskdev://logs/{project}/{name}. We register the multi-form template and
+// also list single-form URIs when only one project is present, so existing
+// agents keep working.
 server.registerResource(
   'taskdev-log',
-  new ResourceTemplate('taskdev://logs/{name}', {
-    list: async () => ({
-      resources: core.listTasks(paths).map(t => ({
-        uri: `taskdev://logs/${t.name}`,
-        name: `${t.name} log`,
-        description: `Current log for task "${t.name}" (${t.status}).`,
-        mimeType: 'text/plain',
-      })),
-    }),
+  new ResourceTemplate('taskdev://logs/{project}/{name}', {
+    list: async () => {
+      const projects = currentProjects();
+      const resources = [];
+      for (const p of projects) {
+        const encodedProject = encodeURIComponent(p.name);
+        for (const t of core.listTasks(p.paths)) {
+          resources.push({
+            uri: projects.length === 1
+              ? `taskdev://logs/${t.name}`
+              : `taskdev://logs/${encodedProject}/${t.name}`,
+            name: `${p.name}: ${t.name} log`,
+            description: `Current log for task "${t.name}" in project "${p.name}" (${t.status}).`,
+            mimeType: 'text/plain',
+          });
+        }
+      }
+      return { resources };
+    },
   }),
   { description: 'Current log for a taskdev task.', mimeType: 'text/plain' },
-  async (uri, { name }) => {
-    if (!core.TASK_NAME_RE.test(name)) throw new Error('invalid task name');
-    const logPath = core.currentLogPath(paths, name);
+  async (uri, vars) => {
+    // Accept both taskdev://logs/{name} and taskdev://logs/{project}/{name}.
+    const projects = currentProjects();
+    let projectName = vars.project ? decodeURIComponent(vars.project) : null;
+    let taskName = vars.name;
+    if (!taskName && projectName) { taskName = projectName; projectName = null; }
+    if (!core.TASK_NAME_RE.test(taskName || '')) throw new Error('invalid task name');
+    const sel = selectProject(projects, projectName);
+    if (!sel.ok) throw new Error(sel.error);
+    const logPath = core.currentLogPath(sel.project.paths, taskName);
     const text = logPath && fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : '';
     return { contents: [{ uri: uri.href, mimeType: 'text/plain', text }] };
   },

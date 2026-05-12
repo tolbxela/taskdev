@@ -19,9 +19,34 @@ function getMcpEntryPath() {
   return path.join(__dirname, 'mcp.mjs').replace(/\\/g, '/');
 }
 
+// Path to a JSON file that lists the current VS Code workspace folder roots.
+// The MCP server re-reads this on every tool call, so adding/removing a
+// workspace folder takes effect without restarting the MCP host.
+function getWorkspacesFilePath() {
+  const home = require('node:os').homedir();
+  return path.join(home, '.taskdev', 'workspaces.json');
+}
+
+function writeWorkspacesFile() {
+  const folders = vscode.workspace.workspaceFolders || [];
+  const roots = folders.map(f => f.uri.fsPath);
+  const file = getWorkspacesFilePath();
+  try {
+    atomicWriteFile(file, JSON.stringify({ updatedAt: new Date().toISOString(), roots }, null, 2) + '\n');
+  } catch (e) {
+    log(`workspaces file write failed: ${e.message}`);
+  }
+  return file;
+}
+
 function getMcpEntry(workspacePath) {
-  const entry = { command: 'node', args: [getMcpEntryPath()] };
-  if (workspacePath) entry.env = { TASKDEV_WORKSPACE: workspacePath };
+  const entry = {
+    command: 'node',
+    args: [getMcpEntryPath()],
+    env: { TASKDEV_WORKSPACES_FILE: getWorkspacesFilePath() },
+  };
+  // Keep TASKDEV_WORKSPACE for backward compatibility with older mcp.mjs.
+  if (workspacePath) entry.env.TASKDEV_WORKSPACE = workspacePath;
   return entry;
 }
 
@@ -82,17 +107,14 @@ async function installMcpConfig() {
         // TOML format
         let toml = '';
         try { toml = fs.readFileSync(codexToml, 'utf8'); } catch {}
-        const env = firstWorkspace ? `\n[mcp_servers.taskdev.env]\nTASKDEV_WORKSPACE = "${firstWorkspace.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"\n` : '';
-        const entry = `\n[mcp_servers.taskdev]\ncommand = "node"\nargs = ["${getMcpEntryPath()}"]\n${env}`;
+        const tomlEscape = v => v.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        const wsFile = getWorkspacesFilePath();
+        const envBody = `TASKDEV_WORKSPACES_FILE = "${tomlEscape(wsFile)}"\n`
+          + (firstWorkspace ? `TASKDEV_WORKSPACE = "${tomlEscape(firstWorkspace)}"\n` : '');
+        const entry = `\n[mcp_servers.taskdev]\ncommand = "node"\nargs = ["${getMcpEntryPath()}"]\n\n[mcp_servers.taskdev.env]\n${envBody}`;
         if (toml.includes('[mcp_servers.taskdev]')) {
-          toml = toml.replace(/(\[mcp_servers\.taskdev\][^\[]*args\s*=\s*\[")[^"]*("\])/,
-            `$1${getMcpEntryPath()}$2`);
-          if (firstWorkspace && toml.includes('[mcp_servers.taskdev.env]')) {
-            toml = toml.replace(/(\[mcp_servers\.taskdev\.env\][^\[]*TASKDEV_WORKSPACE\s*=\s*")[^"]*(")/,
-              `$1${firstWorkspace.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}$2`);
-          } else if (firstWorkspace) {
-            toml += env;
-          }
+          // Replace the whole taskdev block to keep env in sync.
+          toml = toml.replace(/\[mcp_servers\.taskdev\][\s\S]*?(?=\n\[(?!mcp_servers\.taskdev)|$)/, entry.trimStart());
         } else {
           toml += entry;
         }
@@ -250,12 +272,14 @@ class TreeProvider {
       const hasState = fs.existsSync(p.paths.stateFile);
       const tasks = core.listTasks(p.paths, { reconcile: reconcile && hasState })
         .map(t => ({ kind: 'task', _project: p, ...t }));
-      return { kind: 'project', ...p, tasks };
+      const children = buildProjectChildren(p, tasks);
+      return { kind: 'project', ...p, tasks, children };
     });
   }
   getChildren(elem) {
     if (!elem) return this._projects;
-    if (elem.kind === 'project') return elem.tasks || [];
+    if (elem.kind === 'project') return elem.children || [];
+    if (elem.kind === 'category') return elem.tasks || [];
     return [];
   }
   getTreeItem(elem) {
@@ -263,6 +287,7 @@ class TreeProvider {
       const tasks = elem.tasks || [];
       const running = tasks.filter(t => t.status === 'running').length;
       const item = new vscode.TreeItem(elem.name, vscode.TreeItemCollapsibleState.Expanded);
+      item.id = `project:${elem.paths.tasksFile}`;
       item.description = tasks.length
         ? `${tasks.length} task${tasks.length === 1 ? '' : 's'}${running ? ` · ${running} running` : ''}`
         : '(no tasks)';
@@ -271,8 +296,21 @@ class TreeProvider {
       item.contextValue = 'project';
       return item;
     }
+    if (elem.kind === 'category') {
+      const tasks = elem.tasks || [];
+      const running = tasks.filter(t => t.status === 'running').length;
+      const item = new vscode.TreeItem(elem.name, vscode.TreeItemCollapsibleState.Expanded);
+      item.id = `category:${elem._project.paths.tasksFile}:${elem.name}`;
+      item.description = tasks.length
+        ? `${tasks.length} task${tasks.length === 1 ? '' : 's'}${running ? ` · ${running} running` : ''}`
+        : '(no tasks)';
+      item.iconPath = new vscode.ThemeIcon(running ? 'folder-opened' : 'folder');
+      item.contextValue = 'category';
+      return item;
+    }
     const t = elem;
     const item = new vscode.TreeItem(t.name, vscode.TreeItemCollapsibleState.None);
+    item.id = `task:${t._project.paths.tasksFile}:${t.name}`;
     const detail = firstDetailLine(t.detail);
     item.description = t.status === 'running'
       ? `running${t.uptimeMs ? ` · ${formatUptime(t.uptimeMs)}` : ''}`
@@ -282,6 +320,24 @@ class TreeProvider {
     item.iconPath = taskThemeIcon(t);
     return item;
   }
+}
+
+// Group tasks under their categories, preserving the order in which categories
+// first appear in taskdev.json. Uncategorized tasks appear at the project
+// level, above any category groups, keeping their original order too.
+function buildProjectChildren(project, tasks) {
+  const hasCategory = tasks.some(t => t.category);
+  if (!hasCategory) return tasks;
+  const groups = new Map();
+  const uncategorized = [];
+  for (const t of tasks) {
+    if (!t.category) { uncategorized.push(t); continue; }
+    if (!groups.has(t.category)) {
+      groups.set(t.category, { kind: 'category', _project: project, name: t.category, tasks: [] });
+    }
+    groups.get(t.category).tasks.push(t);
+  }
+  return [...uncategorized, ...groups.values()];
 }
 
 function foldersWithoutConfig() {
@@ -390,6 +446,32 @@ async function createTasksFileInFolder(provider, folderArg) {
   await createInFolder(folder, provider);
 }
 
+function resolveOpenBrowserUrl(task) {
+  const value = task.openBrowser;
+  if (!value) return null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    if (/^https?:\/\//i.test(trimmed)) return trimmed;
+    if (trimmed.startsWith('/')) {
+      const port = task.env?.PORT || '3000';
+      return `http://localhost:${port}${trimmed}`;
+    }
+    return null;
+  }
+  const port = task.env?.PORT || '3000';
+  return `http://localhost:${port}`;
+}
+
+function maybeOpenBrowser(task) {
+  const url = resolveOpenBrowserUrl(task);
+  if (!url) return;
+  // Small delay so the dev server has a chance to start listening.
+  setTimeout(() => {
+    vscode.env.openExternal(vscode.Uri.parse(url));
+  }, 1500);
+}
+
 function showLog(elem) {
   if (!elem || elem.kind !== 'task' || !core.TASK_NAME_RE.test(elem.name)) return;
   const logPath = core.currentLogPath(elem._project.paths, elem.name);
@@ -416,6 +498,7 @@ function activate(ctx) {
       if (!task) return;
       const r = core.startTask(task, elem._project.paths);
       if (!r.ok) vscode.window.showWarningMessage(`taskdev: ${r.error}`);
+      if (r.ok && !r.alreadyRunning) maybeOpenBrowser(task);
       provider.refresh();
     }),
     vscode.commands.registerCommand('taskdev.stop', elem => {
@@ -443,18 +526,24 @@ function activate(ctx) {
     ctx.subscriptions.push(watcher);
   }
   for (const f of vscode.workspace.workspaceFolders || []) watchFolder(f);
+  writeWorkspacesFile();
   vscode.workspace.onDidChangeWorkspaceFolders(e => {
     for (const f of e.added) watchFolder(f);
     for (const f of e.removed) {
       const w = watchers.get(f.uri.toString());
       if (w) { w.dispose(); watchers.delete(f.uri.toString()); }
     }
+    writeWorkspacesFile();
     provider.refresh();
   }, null, ctx.subscriptions);
   maybePromptMcpInstallAfterUpdate(ctx);
 }
 
 function deactivate() {
+  // Stop running tasks when the extension deactivates (window close, extension
+  // uninstall/upgrade). This prevents orphaned dev servers, but it also means
+  // tasks do not survive editor reloads. If you need true supervisor behavior
+  // across reloads, this is the place to revisit.
   for (const project of resolveProjects()) {
     const state = core.readState(project.paths.stateFile);
     for (const name of Object.keys(state.tasks || {})) {
