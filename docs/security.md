@@ -1,12 +1,11 @@
-# TaskDev — Security, Allow-list, and Configuration Reference
+# TaskDev — Security and Sandboxing
 
-This is the precise reference for what TaskDev allows, blocks, and accepts in
-configuration. The user-facing `extension/README.md` and the article in
-`docs/taskdev-article.md` are deliberately less detailed; this document is the
-source of truth.
+This document is the precise reference for what TaskDev allows, blocks, and
+sandboxes when agents add tasks through MCP. For the `taskdev.json` schema,
+runtime files, and MCP tools reference, see [`config.md`](config.md). For
+practical setups, see [`usage.md`](usage.md).
 
-All rules below are enforced by `extension/core.cjs`. Line references point at
-the current implementation.
+All rules below are enforced by `extension/core.cjs`.
 
 ---
 
@@ -26,31 +25,17 @@ not currently running and only with explicit confirmation.
 
 ---
 
-## 2. Task name rules
-
-Applies to both user-authored and agent-added tasks.
-
-- Pattern: `^[A-Za-z0-9_.-]{1,64}$`
-- 1–64 characters
-- letters, digits, `_`, `.`, `-`
-
-Used for: task identity, MCP tool arguments, log filenames.
-
-Source: `TASK_NAME_RE` in `extension/core.cjs`.
-
----
-
-## 3. Command rules (agent-added tasks only)
+## 2. Command rules (agent-added tasks only)
 
 When the MCP tool `taskdev_add` is called, the `command` string must satisfy
 **every** rule in this section. Failing any one of them rejects the task with
 a descriptive error.
 
-### 3.1 Length
+### 2.1 Length
 
 - Maximum 300 characters after trimming.
 
-### 3.2 Character set
+### 2.2 Character set
 
 The command must match:
 
@@ -63,7 +48,7 @@ Allowed characters only: letters, digits, and `_  .  /  :  @  %  +  =  ,  -  \  
 Anything else (including tabs, unicode punctuation, `~`, `*`, `?`, etc.) is
 rejected.
 
-### 3.3 No shell metacharacters
+### 2.3 No shell metacharacters
 
 The command must not contain any of:
 
@@ -74,7 +59,7 @@ The command must not contain any of:
 This blocks command chaining, pipes, redirects, variable expansion, command
 substitution, subshells, and embedded newlines.
 
-### 3.4 Must use an allowed prefix
+### 2.4 Must use an allowed prefix
 
 The command must match exactly **one** of these patterns (case-insensitive):
 
@@ -101,12 +86,12 @@ Examples that **fail**:
 
 - `npm install` — `install` is not `run`
 - `node server.js` — `node` is not in the allow-list
-- `bash scripts/dev.sh` — `bash` is denied (see § 3.5)
+- `bash scripts/dev.sh` — `bash` is denied (see § 2.5)
 - `npm run dev && npm run api` — chain operator `&&` is denied
 
 Source: `ALLOWED_COMMAND_PREFIXES` in `extension/core.cjs`.
 
-### 3.5 Executable denylist
+### 2.5 Executable denylist
 
 Even if a token would otherwise match an allowed prefix, the command is
 rejected if it contains any of the following words anywhere (case-insensitive,
@@ -149,7 +134,7 @@ inside an `npm run` argument list still trips it.
 
 Source: `BLOCKED_COMMANDS_BY_OS` in `extension/core.cjs`.
 
-### 3.6 No paths outside the project
+### 2.6 No paths outside the project
 
 Each whitespace-separated token in the command is checked. A token is
 rejected when:
@@ -164,7 +149,7 @@ checked.
 
 ---
 
-## 4. `cwd` rules (agent-added tasks only)
+## 3. `cwd` rules (agent-added tasks only)
 
 - Optional. If omitted, the task runs in the directory containing
   `taskdev.json`.
@@ -179,7 +164,7 @@ applies only to `taskdev_add`.
 
 ---
 
-## 5. `env` rules
+## 4. `env` rules
 
 Applies to both user-authored and agent-added tasks.
 
@@ -187,9 +172,9 @@ Applies to both user-authored and agent-added tasks.
 - Keys must be strings; values are stringified and passed through to the
   spawned child process.
 - The task process inherits `process.env` from the editor, then has these
-  values merged on top (after the denylist in § 5.2 is applied).
+  values merged on top (after the denylist in § 4.2 is applied).
 
-### 5.1 What TaskDev does *not* do with `env`
+### 4.1 What TaskDev does *not* do with `env`
 
 TaskDev is a process supervisor. It does **not** interpret any specific
 environment variable. In particular:
@@ -229,7 +214,7 @@ When TaskDev starts this task it spawns `npm run dev` with the editor's
 `process.env` plus those three keys merged on top. Whether the dev server
 actually listens on `5173` depends entirely on Vite reading `PORT`.
 
-### 5.2 Denied keys
+### 4.2 Denied keys
 
 The following keys are **always** stripped or rejected:
 
@@ -249,7 +234,7 @@ Source: `ENV_DENYLIST` and `sanitizeEnv` in `extension/core.cjs`.
 
 ---
 
-## 6. Confirmation strings
+## 5. Confirmation strings
 
 The two state-changing MCP tools require a literal confirmation string. This
 prevents an agent from adding or removing a task in a single accidental tool
@@ -268,113 +253,7 @@ running — stop it first with `taskdev_control`.
 
 ---
 
-## 7. `taskdev.json` schema
-
-```jsonc
-{
-  "project": "My App",                // optional, display name
-  "tasks": [
-    {
-      "name":    "api",               // required, see § 2
-      "command": "dotnet run --project src/Api", // required
-      "cwd":     "src/Api",           // optional, relative or absolute
-      "env":     { "PORT": "5000" },  // optional, see § 5
-      "type":    "dotnet",            // optional, free-form metadata
-      "detail":  "Starts the API",    // optional, shown in UI
-      "icon":    "server-process"     // optional, see § 7.1
-    }
-  ]
-}
-```
-
-TaskDev searches for `taskdev.json`, then `.taskdev.json`, walking up from
-the workspace folder. Each folder in a multi-root workspace can have its own
-task file.
-
-### 7.1 `icon` shapes
-
-`icon` accepts either:
-
-- a string — a [VS Code codicon](https://microsoft.github.io/vscode-codicons/dist/codicon.html)
-  id, e.g. `"server-process"`.
-- an object — `{ "id": "globe", "color": "terminal.ansiBlue" }`. The `color`
-  must be a valid theme color id.
-
-When `icon` is omitted, TaskDev infers one from the task name/command (see
-`inferTaskIcon` in `extension/extension.js`):
-
-| If name/command/type contains | Inferred icon |
-| --- | --- |
-| `test`, `spec`, `check`, `verify` | `beaker` |
-| `build`, `bundle`, `pack`, `publish`, `compile` | `package` |
-| `dev`, `serve`, `server`, `start`, `watch` | `globe` |
-| `api`, `worker`, `service` | `server-process` |
-| (anything else) | `terminal` |
-
-You can override the fallback with the `taskdev.defaultTaskIcon` setting
-(see § 9).
-
----
-
-## 8. Runtime files
-
-TaskDev creates these next to your `taskdev.json`:
-
-```text
-.taskdev/
-  state.json                 # known PIDs, started-at, status
-  state.json.lock            # transient lock during writes
-  logs/
-    <task>.log               # symlink-style "current" log path used by the UI
-    <task>.<UTC-stamp>.log   # one file per run, e.g. api.20260509T214530000Z.log
-```
-
-- TaskDev keeps the **latest 20** historical log files per task and prunes
-  older ones automatically (`LOG_HISTORY_KEEP = 20`).
-- `taskdev_logs` reads the current run by default. Pass a `file` argument
-  from `taskdev_logs_history` to read an older run. The `file` argument is
-  validated to be a bare filename matching
-  `^<task>\.\d{8}T\d{6}\d{3}Z\.log$`; no slashes or `..` allowed.
-- Add `.taskdev/` to `.gitignore`.
-
----
-
-## 9. Editor settings
-
-| Setting | Default | Purpose |
-| --- | --- | --- |
-| `taskdev.defaultTaskIcon` | `auto` | Fallback codicon id when a task has no `icon`. `auto` keeps the inferred icons from § 7.1; any other value (e.g. `file-code`) becomes a hard fallback. |
-
-The TaskDev sidebar refreshes:
-
-- every 10 s while at least one task is running,
-- every 60 s otherwise,
-- on edits to `taskdev.json` / `.taskdev.json` (file watcher),
-- on workspace folder add/remove,
-- on demand via the **Refresh** button.
-
----
-
-## 10. MCP tools
-
-| Tool | Args | Effect |
-| --- | --- | --- |
-| `taskdev_list`         | — | List all tasks with status, pid, command, cwd, log path. |
-| `taskdev_status`       | `name?` | Status for one task or all. |
-| `taskdev_control`      | `action: "start"\|"stop"`, `name` | Start or stop a task. |
-| `taskdev_restart`      | `name` | Stop then start. |
-| `taskdev_logs`         | `name`, `lines?` (1–500, default 100), `file?` | Read recent log lines from current or older run. |
-| `taskdev_logs_history` | `name` | List previous log files (newest first). |
-| `taskdev_add`          | `name`, `command`, `cwd?`, `env?`, `confirm: "ADD <name>"` | Add a task subject to all rules in § 2–§ 5. |
-| `taskdev_remove`       | `name`, `confirm: "REMOVE <name>"` | Remove a stopped task. |
-
-The MCP server is started by the extension via `node mcp.mjs` with
-`TASKDEV_WORKSPACE` set to the active workspace folder. It exposes no network
-listener.
-
----
-
-## 11. Privacy
+## 6. Privacy
 
 - No telemetry.
 - No network listener.

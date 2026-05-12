@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.19 - 2026-05-12
+
+- **Multi-root MCP support:** the MCP server now discovers every `taskdev.json` across all open workspace folders instead of being locked to one. Each project keeps its own `.taskdev/` state and logs.
+- **New tool** `taskdev_projects` — lists available projects (name from the `project` field in `taskdev.json`, falling back to the folder name; collisions disambiguated as `"Name (folder)"`).
+- Every MCP tool now accepts an optional `project` argument. In a single-project workspace it's inferred automatically; in multi-project workspaces an unambiguous error lists the available names.
+- Log resource URIs become `taskdev://logs/{project}/{name}` when more than one project is present; single-project setups keep `taskdev://logs/{name}` for backward compatibility.
+- Extension writes `~/.taskdev/workspaces.json` on activate and whenever workspace folders are added or removed. The MCP server re-reads it on every call, so folder changes take effect without restarting the MCP host.
+- **New `openBrowser` task property.** Set to `true` to open `http://localhost:<env.PORT>` when the task starts, a path like `/admin` to append, or a full URL to open as-is. Opens after a short delay so the dev server has time to start listening.
+- **New `category` task property.** Optional group label (e.g. `"Extension"`, `"Web Site"`) that renders tasks as collapsible folders in the sidebar. Pure UI metadata — does not affect execution, MCP, or logs. Uncategorized tasks appear at the project level above the groups.
+- `taskdev_logs` now returns plain log text on success and a structured error on failure (instead of mixing the two shapes).
+- README rewritten to be more engaging for new users; sidebar deep-dive moved out to the split docs.
+- New docs at `/docs`: [`usage.md`](https://github.com/tolbxela/taskdev/blob/main/docs/usage.md) (practical recipes), [`config.md`](https://github.com/tolbxela/taskdev/blob/main/docs/config.md) (schema, runtime files, MCP tools), and [`security.md`](https://github.com/tolbxela/taskdev/blob/main/docs/security.md) (trust model, allow-list, denylist). The previous combined `security-and-config.md` was split for clearer separation between policy and reference.
+- Docs are now published on [**taskdev.dev/docs**](https://taskdev.dev/docs) with a terminal-themed reader that matches the rest of the site. `/docs` at the repo root stays the source of truth; the site syncs from it at build time.
+
 ## 0.1.18 - 2026-05-10
 
 - **Multi-root workspace UX:** the **Open taskdev.json** picker now also lists workspace folders that don't have a `taskdev.json`, with a one-click "Create in folder: …" entry. No more digging in the file tree to set up a second project.

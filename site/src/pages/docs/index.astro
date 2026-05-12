@@ -1,0 +1,34 @@
+---
+import DocsLayout from '../../layouts/DocsLayout.astro';
+import { getCollection } from 'astro:content';
+
+const docs = (await getCollection('docs'))
+  .map((e) => ({ slug: e.slug, ...e.data }))
+  .sort((a, b) => a.order - b.order);
+---
+<DocsLayout
+  title="Docs · TaskDev"
+  description="TaskDev documentation: usage guide, security, configuration, MCP tools reference."
+>
+  <h1>Documentation</h1>
+  <p class="muted">
+    Practical guides and a precise reference for using TaskDev. For the big-picture story,
+    read the <a href="https://medium.com/@tolbxela/taskdev-a-task-runner-for-ai-coding-agents-mcp-e4adf4902488">write-up</a>.
+  </p>
+
+  <ul class="docs-index">
+    {docs.map((d) => (
+      <li>
+        <a href={`/docs/${d.slug}`}>
+          <span class="docs-index-title">{d.title}</span>
+          <span class="docs-index-summary">{d.summary}</span>
+        </a>
+      </li>
+    ))}
+  </ul>
+
+  <p class="muted" style="margin-top:3rem">
+    The same markdown is kept in the repo at
+    <a href="https://github.com/tolbxela/taskdev/tree/main/docs"><code>/docs</code></a>.
+  </p>
+</DocsLayout>

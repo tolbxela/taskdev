@@ -1,0 +1,45 @@
+---
+import Base from '../layouts/Base.astro';
+---
+<Base
+  title="404 · Not Found · TaskDev"
+  description="The page you're looking for isn't here."
+>
+  <section class="notfound">
+    <div class="terminal" aria-hidden="true">
+      <div class="terminal-bar">
+        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+        <span class="title">taskdev  ·  resolver</span>
+      </div>
+      <div class="terminal-body"><span class="line"><span class="info">user</span> <span class="dim">›</span> <span class="cmd">open {Astro.url.pathname}</span></span><span class="line"><span class="info">[mcp]</span> <span class="out">taskdev_resolve  → </span><span class="warn">not found</span></span><span class="line"><span class="dim">[resolver]</span> <span class="out">page does not exist</span></span><span class="line"><span class="dim">[resolver]</span> <span class="out">exit </span><span class="warn">404</span></span><span class="line"><span class="ok">claude</span> <span class="dim">›</span> <span class="out">try one of the routes below</span><span class="cursor"></span></span></div>
+    </div>
+
+    <div class="section-head"><h2>// 404 · not found</h2><span class="rule"></span></div>
+
+    <h1>This page wandered off.</h1>
+
+    <p class="muted">
+      The path <code>{Astro.url.pathname}</code> does not match any known route.
+      It might have been moved, renamed, or it never existed.
+    </p>
+
+    <div class="cta">
+      <a class="btn primary" href="/">Back to home <span class="arrow">→</span></a>
+      <a class="btn" href="/docs">Read the docs</a>
+      <a class="btn" href="https://github.com/tolbxela/taskdev">GitHub <span class="arrow">↗</span></a>
+    </div>
+
+    <div class="notfound-routes">
+      <div class="section-head"><h2>// known routes</h2><span class="rule"></span></div>
+      <ul>
+        <li><a href="/"><code>/</code></a> <span class="dim">— overview &amp; install</span></li>
+        <li><a href="/docs"><code>/docs</code></a> <span class="dim">— documentation index</span></li>
+        <li><a href="/docs/usage"><code>/docs/usage</code></a> <span class="dim">— practical recipes</span></li>
+        <li><a href="/docs/config"><code>/docs/config</code></a> <span class="dim">— schema &amp; MCP tools</span></li>
+        <li><a href="/docs/security"><code>/docs/security</code></a> <span class="dim">— allow-list &amp; sandboxing</span></li>
+        <li><a href="/contact"><code>/contact</code></a> <span class="dim">— say hi</span></li>
+        <li><a href="/privacy"><code>/privacy</code></a> <span class="dim">— privacy policy</span></li>
+      </ul>
+    </div>
+  </section>
+</Base>

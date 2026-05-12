@@ -1,0 +1,17 @@
+---
+const links = [
+  { href: '/docs',                                                          label: 'Docs',     external: false },
+  { href: 'https://github.com/tolbxela/taskdev',                            label: 'GitHub',   external: true  },
+  { href: 'https://marketplace.visualstudio.com/items?itemName=Tolbxela.taskdev', label: 'VS Code',  external: true  },
+  { href: 'https://open-vsx.org/extension/tolbxela/taskdev',                label: 'Open VSX', external: true  },
+  { href: '/contact',                                                       label: 'Contact',  external: false },
+];
+---
+<nav class="nav">
+  <a href="/" class="logo">taskdev<span class="accent">.dev</span></a>
+  <div class="links">
+    {links.map(l => (
+      <a href={l.href}>{l.label}</a>
+    ))}
+  </div>
+</nav>

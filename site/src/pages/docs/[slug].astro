@@ -1,0 +1,32 @@
+---
+import DocsLayout from '../../layouts/DocsLayout.astro';
+import { getCollection } from 'astro:content';
+
+export async function getStaticPaths() {
+  const docs = await getCollection('docs');
+  return docs.map((entry) => ({
+    params: { slug: entry.slug },
+    props: { entry },
+  }));
+}
+
+const { entry } = Astro.props;
+const { Content } = await entry.render();
+---
+<DocsLayout
+  title={`${entry.data.title} · TaskDev Docs`}
+  description={entry.data.summary}
+  activeSlug={entry.slug}
+>
+  <h1>{entry.data.title}</h1>
+  <p class="muted">{entry.data.summary}</p>
+
+  <Content />
+
+  <p class="docs-source-note muted">
+    Source:
+    <a href={`https://github.com/tolbxela/taskdev/blob/main/docs/${entry.data.source}`}>
+      <code>docs/{entry.data.source}</code>
+    </a>
+  </p>
+</DocsLayout>
