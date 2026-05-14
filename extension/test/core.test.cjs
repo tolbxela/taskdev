@@ -90,6 +90,75 @@ withTempProject(({ dir }) => {
   }
 }
 
+// discoverProjects: subtree discovery, exclude dirs, nested project naming.
+{
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'taskdev-subtree-'));
+  try {
+    // apps/web: has named project
+    fs.mkdirSync(path.join(root, 'apps', 'web'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'apps', 'web', 'taskdev.json'),
+      JSON.stringify({ project: 'Web', tasks: [] }),
+    );
+    // services/api: no project field -> fallback to relative path
+    fs.mkdirSync(path.join(root, 'services', 'api'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'services', 'api', 'taskdev.json'),
+      JSON.stringify({ tasks: [] }),
+    );
+    // node_modules/whatever/taskdev.json must be ignored.
+    fs.mkdirSync(path.join(root, 'node_modules', 'pkg'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'node_modules', 'pkg', 'taskdev.json'),
+      JSON.stringify({ project: 'ShouldBeIgnored', tasks: [] }),
+    );
+    // .git/taskdev.json must be ignored.
+    fs.mkdirSync(path.join(root, '.git'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, '.git', 'taskdev.json'),
+      JSON.stringify({ project: 'AlsoIgnored', tasks: [] }),
+    );
+    // bin and obj under a nested project: ignored.
+    fs.mkdirSync(path.join(root, 'apps', 'api', 'bin'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'apps', 'api', 'bin', 'taskdev.json'),
+      JSON.stringify({ project: 'BinJunk', tasks: [] }),
+    );
+    fs.mkdirSync(path.join(root, 'apps', 'api', 'obj'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'apps', 'api', 'obj', 'taskdev.json'),
+      JSON.stringify({ project: 'ObjJunk', tasks: [] }),
+    );
+
+    const projects = core.discoverProjects([root]);
+    const names = projects.map(p => p.name).sort();
+    assert.deepEqual(names, ['Web', 'services/api'],
+      'expected only the two real nested projects; node_modules / .git / bin / obj must be excluded');
+
+    // scanForTasksFiles exposed for the extension's foldersWithoutConfig helper.
+    const files = core.scanForTasksFiles(root);
+    assert.equal(files.length, 2, 'scanner finds same two files');
+    assert.ok(files.every(f => f.endsWith('taskdev.json')));
+
+    // maxResults short-circuits.
+    const truncated = core.scanForTasksFiles(root, { maxResults: 1 });
+    assert.equal(truncated.length, 1);
+
+    // Nesting: a taskdev.json INSIDE another project's subtree is not picked
+    // up. The outer one wins.
+    fs.mkdirSync(path.join(root, 'apps', 'web', 'subapp'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'apps', 'web', 'subapp', 'taskdev.json'),
+      JSON.stringify({ project: 'Inner', tasks: [] }),
+    );
+    const afterNesting = core.discoverProjects([root]).map(p => p.name).sort();
+    assert.deepEqual(afterNesting, ['Web', 'services/api'],
+      'a nested taskdev.json inside an existing project must be ignored');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+}
+
 withTempProject(({ tasksFile }) => {
   assert.deepEqual(core.validateTaskCommand('dotnet build', tasksFile), {
     ok: true,

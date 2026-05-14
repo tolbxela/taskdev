@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.20 - 2026-05-14
+
+- **Subfolder `taskdev.json` discovery.** TaskDev now finds task files anywhere under each workspace folder — perfect for monorepos with `apps/web/taskdev.json`, `services/api/taskdev.json`, and so on. Common build / cache / VCS directories are skipped: `.git`, `.hg`, `.svn`, `node_modules`, `bin`, `obj`, `dist`, `build`, `out`, `target`, `.next`, `.nuxt`, `.svelte-kit`, `.astro`, `.angular`, `.parcel-cache`, `.cache`, `.turbo`, `.vercel`, `.netlify`, `coverage`, `.nyc_output`, `__pycache__`, `.venv`, `venv`, `.tox`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `vendor`, `Pods`, `DerivedData`, `.vscode`, `.idea`, `.taskdev`.
+- A nested `taskdev.json` *inside* another project's subtree is ignored — the outer one wins. One project owns its tree.
+- Project names fall back to the relative path from the workspace folder (`apps/web` rather than just `web`), so monorepos get clean disambiguation out of the box.
+- **No periodic filesystem scans.** Discovery runs only on activate, on `taskdev.json` create/change/delete (via the file watcher), on the **Refresh** button, and on workspace folder add/remove. The periodic sidebar tick only re-reads task state from already-discovered projects.
+- **New command `TaskDev: Send feedback`** — opens the contact form at [taskdev.dev/contact](https://taskdev.dev/contact). Available from the command palette.
+
 ## 0.1.19 - 2026-05-12
 
 - **Multi-root MCP support:** the MCP server now discovers every `taskdev.json` across all open workspace folders instead of being locked to one. Each project keeps its own `.taskdev/` state and logs.

@@ -226,17 +226,10 @@ function taskTooltip(task) {
   return lines.join('\n');
 }
 
-function resolveProjects() {
+function discoverWorkspaceProjects() {
   const folders = vscode.workspace.workspaceFolders || [];
-  const projects = [];
-  for (const f of folders) {
-    const tasksFile = core.findTasksFile(f.uri.fsPath, f.uri.fsPath);
-    if (!tasksFile) continue;
-    const cfg = core.loadConfig(tasksFile);
-    const projectName = (typeof cfg.project === 'string' && cfg.project.trim()) || f.name;
-    projects.push({ name: projectName, paths: core.pathsFor(tasksFile) });
-  }
-  return projects;
+  const roots = folders.map(f => f.uri.fsPath);
+  return core.discoverProjects(roots);
 }
 
 const ACTIVE_REFRESH_MS = 10000;
@@ -246,9 +239,18 @@ class TreeProvider {
   constructor() {
     this._em = new vscode.EventEmitter();
     this.onDidChangeTreeData = this._em.event;
+    // Cached project metadata (name, paths, tasksFile). Populated by a
+    // filesystem scan; the periodic timer NEVER re-scans, it only re-reads
+    // task state for each cached project. Discovery only re-runs on:
+    //   - activate
+    //   - the file watcher firing (taskdev.json created/changed/deleted)
+    //   - explicit refresh button / refresh command
+    //   - workspace folder add/remove
+    this._discovered = [];
     this._projects = [];
     this._timer = null;
     this._timerInterval = 0;
+    this._rediscover();
     this._rebuild(true);
     this._scheduleTimer();
   }
@@ -260,15 +262,27 @@ class TreeProvider {
     if (this._timer && this._timerInterval === desired) return;
     if (this._timer) clearInterval(this._timer);
     this._timerInterval = desired;
-    this._timer = setInterval(() => this.refresh(true), desired);
+    // Periodic tick: refresh task state from already-discovered projects.
+    // No filesystem walk happens here.
+    this._timer = setInterval(() => this._tick(), desired);
   }
+  _tick() {
+    this._rebuild(true);
+    this._em.fire();
+    this._scheduleTimer();
+  }
+  // Triggered by user-driven events: re-walk the workspace tree.
   refresh(reconcile = true) {
+    this._rediscover();
     this._rebuild(reconcile);
     this._em.fire();
     this._scheduleTimer();
   }
+  _rediscover() {
+    this._discovered = discoverWorkspaceProjects();
+  }
   _rebuild(reconcile) {
-    this._projects = resolveProjects().map(p => {
+    this._projects = this._discovered.map(p => {
       const hasState = fs.existsSync(p.paths.stateFile);
       const tasks = core.listTasks(p.paths, { reconcile: reconcile && hasState })
         .map(t => ({ kind: 'task', _project: p, ...t }));
@@ -341,8 +355,12 @@ function buildProjectChildren(project, tasks) {
 }
 
 function foldersWithoutConfig() {
+  // A workspace folder is "without config" if no taskdev.json exists anywhere
+  // in its subtree (subject to the same exclude list the discoverer uses).
+  // This is what makes the "Create taskdev.json in folder…" picker meaningful
+  // in a monorepo where some folders are covered by nested configs.
   const folders = vscode.workspace.workspaceFolders || [];
-  return folders.filter(f => !core.findTasksFile(f.uri.fsPath, f.uri.fsPath));
+  return folders.filter(f => core.scanForTasksFiles(f.uri.fsPath, { maxResults: 1 }).length === 0);
 }
 
 async function createInFolder(folder, provider) {
@@ -360,7 +378,7 @@ async function openOrCreateTasksFile(provider) {
     vscode.window.showInformationMessage('taskdev: no workspace folder open');
     return;
   }
-  const projects = resolveProjects();
+  const projects = discoverWorkspaceProjects();
   const missing = foldersWithoutConfig();
 
   // No projects yet: if exactly one folder, just create. Otherwise let the user pick.
@@ -511,13 +529,24 @@ function activate(ctx) {
     vscode.commands.registerCommand('taskdev.installMcp', installMcpConfig),
     vscode.commands.registerCommand('taskdev.openTasksFile', () => openOrCreateTasksFile(provider)),
     vscode.commands.registerCommand('taskdev.createTasksFile', folderArg => createTasksFileInFolder(provider, folderArg)),
+    vscode.commands.registerCommand('taskdev.sendFeedback', () => {
+      // Reuses the contact form at taskdev.dev/contact. The ?from query is
+      // picked up by site analytics so we can tell extension-driven traffic
+      // apart from organic visits.
+      vscode.env.openExternal(vscode.Uri.parse('https://taskdev.dev/contact?from=extension'));
+    }),
   );
 
   const watchers = new Map();
   function watchFolder(f) {
     if (watchers.has(f.uri.toString())) return;
+    // Watch every taskdev.json / .taskdev.json anywhere under the workspace
+    // folder. VS Code's file system watcher delivers OS-level events for
+    // matching files only; the recursive glob does not cause any periodic
+    // scanning. A taskdev.json appearing or disappearing triggers a single
+    // refresh, which re-walks the workspace to update the project list.
     const watcher = vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(f, '{taskdev.json,.taskdev.json}')
+      new vscode.RelativePattern(f, '**/{taskdev.json,.taskdev.json}')
     );
     watcher.onDidChange(() => provider.refresh());
     watcher.onDidCreate(() => provider.refresh());
@@ -544,7 +573,7 @@ function deactivate() {
   // uninstall/upgrade). This prevents orphaned dev servers, but it also means
   // tasks do not survive editor reloads. If you need true supervisor behavior
   // across reloads, this is the place to revisit.
-  for (const project of resolveProjects()) {
+  for (const project of discoverWorkspaceProjects()) {
     const state = core.readState(project.paths.stateFile);
     for (const name of Object.keys(state.tasks || {})) {
       try { core.stopTask(name, project.paths); } catch { /* ignore */ }

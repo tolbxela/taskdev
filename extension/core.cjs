@@ -592,7 +592,10 @@ function logHistory(paths, name) {
   };
 }
 
-const PROJECT_NAME_RE = /^[A-Za-z0-9_.\- ]{1,64}$/;
+// Project name. Allows '/' so a relative path inside a workspace folder
+// (e.g. "apps/web") can be used as a fallback display name when the
+// taskdev.json does not set "project" explicitly.
+const PROJECT_NAME_RE = /^[A-Za-z0-9_.\- /]{1,64}$/;
 
 function sanitizeProjectName(name, fallback) {
   if (typeof name === 'string') {
@@ -602,21 +605,110 @@ function sanitizeProjectName(name, fallback) {
   return fallback;
 }
 
-function discoverProjects(roots) {
+// Directory names that are always skipped when walking a workspace looking
+// for taskdev.json files. These are the usual suspects that hold thousands
+// of files we don't care about. Excludes are matched by exact directory
+// name (not glob), which keeps the walker dependency-free and fast.
+const SCAN_EXCLUDED_DIRS = new Set([
+  '.git', '.hg', '.svn',
+  'node_modules',
+  '.taskdev',           // our own runtime dir
+  '.vscode', '.idea',
+  'bin', 'obj',          // .NET
+  'dist', 'build', 'out',
+  'target',              // Rust / Java
+  '.next', '.nuxt', '.svelte-kit', '.astro', '.angular', '.parcel-cache',
+  '.cache', '.turbo', '.vercel', '.netlify',
+  'coverage', '.nyc_output',
+  '__pycache__', '.venv', 'venv', '.tox', '.pytest_cache', '.mypy_cache', '.ruff_cache',
+  'vendor',              // Go / PHP
+  'Pods',                // CocoaPods
+  'DerivedData',         // Xcode
+]);
+
+// Cap to keep a pathological workspace (think: untracked monorepo with
+// generated configs) from making us walk forever. Far above any realistic
+// number of task files in a single project tree.
+const SCAN_MAX_RESULTS = 64;
+const SCAN_MAX_DEPTH = 8;
+
+// Synchronous BFS for taskdev.json / .taskdev.json under `root`. Returns
+// absolute file paths in deterministic order (sorted within each directory).
+// Cost is O(visited directories); excluded subtrees are not entered at all.
+function scanForTasksFiles(root, opts) {
+  const startDir = path.resolve(root);
+  if (!fs.existsSync(startDir)) return [];
+  const extraExcludes = opts && Array.isArray(opts.extraExcludes)
+    ? new Set(opts.extraExcludes.filter(s => typeof s === 'string' && s))
+    : null;
+  const maxResults = (opts && opts.maxResults) || SCAN_MAX_RESULTS;
+  const maxDepth = (opts && typeof opts.maxDepth === 'number') ? opts.maxDepth : SCAN_MAX_DEPTH;
+
+  const found = [];
+  const queue = [{ dir: startDir, depth: 0 }];
+  while (queue.length && found.length < maxResults) {
+    const { dir, depth } = queue.shift();
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+    catch { continue; }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+
+    // Files first: if this directory has a task file, record it and stop
+    // descending here. Nesting a taskdev.json inside another project's
+    // subtree is not supported - the parent owns this folder.
+    let hit = null;
+    for (const e of entries) {
+      if (!e.isFile()) continue;
+      if (e.name === 'taskdev.json' || e.name === '.taskdev.json') {
+        hit = path.join(dir, e.name);
+        break;
+      }
+    }
+    if (hit) {
+      found.push(hit);
+      continue;
+    }
+
+    if (depth >= maxDepth) continue;
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      // Skip symlinks to avoid loops and to keep behavior predictable.
+      if (e.isSymbolicLink && e.isSymbolicLink()) continue;
+      const name = e.name;
+      if (name.startsWith('.') && SCAN_EXCLUDED_DIRS.has(name)) {
+        // dotted dirs we explicitly exclude (e.g. .git, .next)
+        continue;
+      }
+      if (SCAN_EXCLUDED_DIRS.has(name)) continue;
+      if (extraExcludes && extraExcludes.has(name)) continue;
+      queue.push({ dir: path.join(dir, name), depth: depth + 1 });
+    }
+  }
+  return found;
+}
+
+function discoverProjects(roots, opts) {
   const list = Array.isArray(roots) ? roots : [];
   const seen = new Set();
   const projects = [];
   for (const raw of list) {
     if (typeof raw !== 'string' || !raw.trim()) continue;
     const root = path.resolve(raw);
-    const tasksFile = findTasksFile(root, root);
-    if (!tasksFile) continue;
-    if (seen.has(tasksFile)) continue;
-    seen.add(tasksFile);
-    const cfg = loadConfig(tasksFile);
-    const fallback = path.basename(path.dirname(tasksFile));
-    const name = sanitizeProjectName(cfg.project, fallback);
-    projects.push({ name, root, tasksFile, paths: pathsFor(tasksFile) });
+    const files = scanForTasksFiles(root, opts);
+    for (const tasksFile of files) {
+      if (seen.has(tasksFile)) continue;
+      seen.add(tasksFile);
+      const cfg = loadConfig(tasksFile);
+      const folder = path.basename(path.dirname(tasksFile));
+      const rel = path.relative(root, path.dirname(tasksFile));
+      // Fallback name: relative path inside the workspace folder, which
+      // disambiguates monorepos out of the box ("apps/web" vs "web"). Pure
+      // root-level configs keep the folder name so existing setups don't
+      // suddenly get renamed.
+      const fallback = !rel || rel === '.' ? folder : rel.split(path.sep).join('/');
+      const name = sanitizeProjectName(cfg.project, fallback);
+      projects.push({ name, root, tasksFile, paths: pathsFor(tasksFile) });
+    }
   }
   // Disambiguate duplicate names by appending " (folder)".
   const counts = new Map();
@@ -636,5 +728,5 @@ module.exports = {
   readState, writeState, isAlive, processFingerprint, reconcile, startTask, stopTask, restartTask, listTasks,
   logPathFor, newLogPath, currentLogPath, listLogFiles, logHistory,
   tailLog, validateTaskCommand, validateNewTask, addTask, removeTask, loadConfigForWrite,
-  discoverProjects, sanitizeProjectName,
+  discoverProjects, sanitizeProjectName, scanForTasksFiles, SCAN_EXCLUDED_DIRS,
 };

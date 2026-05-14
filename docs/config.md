@@ -45,9 +45,37 @@ Source: `TASK_NAME_RE` in `extension/core.cjs`.
 }
 ```
 
-TaskDev searches for `taskdev.json`, then `.taskdev.json`, walking up from
-the workspace folder. Each folder in a multi-root workspace can have its own
-task file.
+TaskDev searches each workspace folder **recursively** for `taskdev.json`
+(falling back to `.taskdev.json`), so monorepos can have a config per app:
+
+```text
+my-monorepo/
+├── apps/
+│   ├── web/taskdev.json        ← project "web"
+│   └── mobile/taskdev.json     ← project "mobile"
+├── services/
+│   └── api/taskdev.json        ← project "services/api"
+└── taskdev.json                ← optional root project
+```
+
+A few rules keep this fast and predictable:
+
+- **Excluded directories** are never entered: `.git`, `.hg`, `.svn`,
+  `node_modules`, `bin`, `obj`, `dist`, `build`, `out`, `target`,
+  `.next`, `.nuxt`, `.svelte-kit`, `.astro`, `.angular`, `.parcel-cache`,
+  `.cache`, `.turbo`, `.vercel`, `.netlify`, `coverage`, `.nyc_output`,
+  `__pycache__`, `.venv`, `venv`, `.tox`, `.pytest_cache`, `.mypy_cache`,
+  `.ruff_cache`, `vendor`, `Pods`, `DerivedData`, `.vscode`, `.idea`,
+  `.taskdev`. Matched by exact directory name, case-sensitive.
+- **No nesting.** Once a directory has a `taskdev.json`, TaskDev stops
+  descending. A second config inside another project's tree is ignored —
+  the outer project owns its folder.
+- **Project name** defaults to the relative path from the workspace folder
+  (`apps/web`, `services/api`) when the JSON doesn't set `project`
+  explicitly. Pure root-level configs still use the folder name.
+- **No periodic scans.** Discovery only runs on activate, on file watcher
+  events (a `taskdev.json` is created / changed / deleted), on the
+  **Refresh** button, and on workspace folder add/remove.
 
 ### 2.1 `icon` shapes
 
