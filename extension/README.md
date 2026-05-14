@@ -3,8 +3,11 @@
 **One place for your dev tasks. One place for your logs. And your AI agent sees them too.**
 
 [![Site](https://img.shields.io/badge/site-taskdev.dev-blue)](https://taskdev.dev)
-[![Marketplace](https://img.shields.io/visual-studio-marketplace/v/tolbxela.taskdev?label=VS%20Marketplace)](https://marketplace.visualstudio.com/items?itemName=tolbxela.taskdev)
+[![VS Marketplace](https://img.shields.io/visual-studio-marketplace/v/tolbxela.taskdev?label=VS%20Marketplace)](https://marketplace.visualstudio.com/items?itemName=tolbxela.taskdev)
+[![VS Marketplace installs](https://img.shields.io/visual-studio-marketplace/i/tolbxela.taskdev?label=installs)](https://marketplace.visualstudio.com/items?itemName=tolbxela.taskdev)
 [![Open VSX](https://img.shields.io/open-vsx/v/tolbxela/taskdev?label=Open%20VSX)](https://open-vsx.org/extension/tolbxela/taskdev)
+[![Open VSX downloads](https://img.shields.io/open-vsx/dt/tolbxela/taskdev?label=downloads)](https://open-vsx.org/extension/tolbxela/taskdev)
+[![Rating](https://img.shields.io/visual-studio-marketplace/r/tolbxela.taskdev?label=rating)](https://marketplace.visualstudio.com/items?itemName=tolbxela.taskdev&ssr=false#review-details)
 
 TaskDev is a small **VS Code / Cursor / Windsurf extension** that supervises your dev tasks - API, frontend, worker, watcher - and gives **AI coding agents** a real handle on those processes through **MCP**.
 
