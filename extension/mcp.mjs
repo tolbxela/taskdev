@@ -184,23 +184,40 @@ server.tool(
   },
 );
 
+// Per-response byte budget for log content. Tuned to fit comfortably inside a
+// single MCP message without blowing the context budget of small models.
+// Agents that need more tail context raise `bytes`; for an older run they
+// call `taskdev_logs_history` and pass its `file` here.
+const LOGS_BYTES_DEFAULT = 32 * 1024;
+const LOGS_BYTES_MAX = 128 * 1024;
+
 server.tool(
   'taskdev_logs',
-  'Get the last N lines of a task log. By default returns the current (most recent) run. Pass a file from taskdev_logs_history to read an older run.',
+  'Read the tail of a task log. Defaults to the last ~100 lines (capped at 32 KB) of the most recent run. Raise `bytes` (up to 131072) for more context. To inspect a previous run, call `taskdev_logs_history` first and pass its `file` here. For deeper analysis of huge logs, read the file directly using the `path` returned by `taskdev_logs_history` — this tool intentionally bounds response size.',
   {
     name: z.string().regex(core.TASK_NAME_RE),
-    lines: z.number().int().min(1).max(500).default(100),
-    file: z.string().optional(),
+    lines: z.number().int().min(1).max(500).default(100)
+      .describe('Soft cap on number of lines to return.'),
+    bytes: z.number().int().min(1024).max(LOGS_BYTES_MAX).optional()
+      .describe(`Soft cap on bytes to return (default ${LOGS_BYTES_DEFAULT}, max ${LOGS_BYTES_MAX}). The smaller of \`lines\` and \`bytes\` wins.`),
+    file: z.string().optional()
+      .describe('Specific log file from taskdev_logs_history to read instead of the current run.'),
     project: projectParam,
   },
-  async ({ name, lines, file, project }) => {
+  async ({ name, lines, bytes, file, project }) => {
     const sel = selectProject(currentProjects(), project);
     if (!sel.ok) return errResult(sel.error);
-    const result = core.tailLog(sel.project.paths, name, lines, file);
-    // Return the raw log text on success. Agents that need structure can
-    // call taskdev_logs_history first; this tool is optimized for tokens.
-    if (result.ok) return { content: [{ type: 'text', text: result.text }] };
-    return errResult(result.error || 'log read failed');
+    const budget = Math.min(bytes ?? LOGS_BYTES_DEFAULT, LOGS_BYTES_MAX);
+    const result = core.tailLog(sel.project.paths, name, lines, file, budget);
+    if (!result.ok) return errResult(result.error || 'log read failed');
+    // Single grep-friendly header so the agent knows when the response is
+    // only the tail of a larger file. No paging — if the agent needs more
+    // than `bytes=${LOGS_BYTES_MAX}`, it should read the file directly via
+    // the `path` from taskdev_logs_history.
+    const header = result.truncated
+      ? `[taskdev: showing last ${result.returnedBytes} of ${result.logSize} bytes; raise \`bytes\` (max ${LOGS_BYTES_MAX}) or read \`taskdev_logs_history\`.path directly for more]\n`
+      : '';
+    return { content: [{ type: 'text', text: header + result.text }] };
   },
 );
 
@@ -272,7 +289,18 @@ server.registerResource(
     const sel = selectProject(projects, projectName);
     if (!sel.ok) throw new Error(sel.error);
     const logPath = core.currentLogPath(sel.project.paths, taskName);
-    const text = logPath && fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : '';
+    // Always read a bounded tail so an MCP host pulling a multi-megabyte log
+    // doesn't blow up its context window or the stdio framing.
+    let text = '';
+    if (logPath && fs.existsSync(logPath)) {
+      const tail = core.tailLog(sel.project.paths, taskName, 5000, undefined, core.TAIL_READ_MAX_BYTES);
+      if (tail.ok) {
+        const header = tail.truncated
+          ? `[taskdev: showing last ${tail.returnedBytes} of ${tail.logSize} bytes]\n`
+          : '';
+        text = header + tail.text;
+      }
+    }
     return { contents: [{ uri: uri.href, mimeType: 'text/plain', text }] };
   },
 );

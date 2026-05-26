@@ -111,26 +111,36 @@ function writeState(stateFile, state) {
   fs.renameSync(tmp, stateFile);
 }
 
+// Tracks whether the Windows `wmic` command exists. wmic was deprecated and
+// removed in Windows 11 24H2; on those systems we must NOT fall back to
+// powershell, because a powershell cold start is 1–3 seconds and we call this
+// during `startTask` while holding the state lock. Once we've learned that
+// wmic is unavailable, return null immediately on subsequent calls.
+//   null   -> unknown (probe once)
+//   true   -> wmic spawns succeed
+//   false  -> wmic missing or unusable, skip fingerprinting on this host
+let WMIC_AVAILABLE = null;
+
 function processFingerprint(pid) {
   if (!pid || !Number.isInteger(pid)) return null;
   if (process.platform === 'win32') {
+    if (WMIC_AVAILABLE === false) return null;
     const r = spawnSync('wmic', ['process', 'where', `ProcessId=${pid}`, 'get', 'CreationDate', '/value'], {
       encoding: 'utf8',
       windowsHide: true,
     });
+    if (r.error && r.error.code === 'ENOENT') {
+      WMIC_AVAILABLE = false;
+      return null;
+    }
     if (r.status === 0) {
+      WMIC_AVAILABLE = true;
       const match = r.stdout.match(/CreationDate=([^\s\r\n]+)/);
       if (match) return match[1];
     }
-    const ps = spawnSync('powershell.exe', [
-      '-NoProfile',
-      '-Command',
-      `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}").CreationDate.ToFileTimeUtc()`,
-    ], {
-      encoding: 'utf8',
-      windowsHide: true,
-    });
-    return ps.status === 0 && ps.stdout.trim() ? ps.stdout.trim() : null;
+    // wmic exited non-zero (e.g. unknown PID). Don't pay for a powershell
+    // cold start; fall back to PID-alive checks only.
+    return null;
   }
   if (process.platform === 'linux') {
     try {
@@ -146,18 +156,50 @@ function processFingerprint(pid) {
   return null;
 }
 
+// Quick existence check that avoids spawning a child process. On Windows this
+// goes through libuv's OpenProcess path; on POSIX it sends signal 0.
+//   ESRCH  -> process does not exist
+//   EPERM  -> process exists, we just can't signal it (treat as alive)
+function pidAlive(pid) {
+  if (!pid || !Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (e) { return e && e.code === 'EPERM'; }
+}
+
+// PIDs whose stored processFingerprint we've already verified during this
+// process's lifetime. `isAlive` skips the (expensive) wmic/powershell call on
+// subsequent reconciles for the same PID, which is the dominant cost on
+// Windows. Once a PID disappears the cache entry is dropped so reuse by a
+// brand-new task still gets verified on its first reconcile.
+const VERIFIED_FINGERPRINT_PIDS = new Map(); // pid -> fingerprint string
+
+function _clearVerifiedFingerprintCache() {
+  VERIFIED_FINGERPRINT_PIDS.clear();
+}
+
+function _verifiedFingerprintCacheSize() {
+  return VERIFIED_FINGERPRINT_PIDS.size;
+}
+
 function isAlive(pidOrEntry) {
   const pid = typeof pidOrEntry === 'object' ? pidOrEntry?.pid : pidOrEntry;
   if (!pid || !Number.isInteger(pid)) return false;
-  if (process.platform === 'win32') {
-    const r = spawnSync('tasklist', ['/FI', `PID eq ${pid}`, '/NH', '/FO', 'CSV'], { encoding: 'utf8', windowsHide: true });
-    if (r.status !== 0 || !r.stdout.includes(`"${pid}"`)) return false;
-  } else {
-    try { process.kill(pid, 0); } catch { return false; }
+  if (!pidAlive(pid)) {
+    VERIFIED_FINGERPRINT_PIDS.delete(pid);
+    return false;
   }
   if (typeof pidOrEntry === 'object' && pidOrEntry?.processFingerprint) {
+    const cached = VERIFIED_FINGERPRINT_PIDS.get(pid);
+    if (cached === pidOrEntry.processFingerprint) return true;
     const current = processFingerprint(pid);
-    if (current && current !== pidOrEntry.processFingerprint) return false;
+    if (current && current !== pidOrEntry.processFingerprint) {
+      VERIFIED_FINGERPRINT_PIDS.delete(pid);
+      return false;
+    }
+    // Either the fingerprint matched, or we couldn't read one (e.g. wmic is
+    // gone and powershell failed). In the latter case we fall back to trust
+    // by PID liveness alone, which is what the POSIX path also does.
+    VERIFIED_FINGERPRINT_PIDS.set(pid, pidOrEntry.processFingerprint);
   }
   return true;
 }
@@ -564,18 +606,69 @@ function resolveLogPath(paths, name, file) {
   return { ok: true, logPath };
 }
 
-function tailLog(paths, name, lines = 100, file) {
+// Default read window when slicing the tail of a log. Large enough to capture
+// hundreds of typical lines, small enough that single reads stay cheap.
+const TAIL_READ_DEFAULT_BYTES = 64 * 1024;
+const TAIL_READ_MAX_BYTES = 256 * 1024;
+
+// Read the tail of a log file, bounded by both a line cap and a byte budget.
+// Callers (the MCP tool, the extension's own log resource) use the returned
+// metadata to decide whether to show a "log truncated" hint to the user.
+//
+// Parameters:
+//   lines  - soft line cap (default 100).
+//   bytes  - window size in bytes (default TAIL_READ_DEFAULT_BYTES, clamped
+//            to TAIL_READ_MAX_BYTES).
+//
+// Returns (on success):
+//   text           - decoded UTF-8 tail; partial first line is dropped when
+//                    older content exists so callers only see whole records.
+//   logSize        - total file size in bytes
+//   returnedBytes  - Buffer.byteLength(text)
+//   truncated      - true when older content was dropped to fit the budget
+function tailLog(paths, name, lines = 100, file, bytes) {
   const resolved = resolveLogPath(paths, name, file);
   if (!resolved.ok) return resolved;
   const { logPath } = resolved;
   const stat = fs.statSync(logPath);
-  const cap = 256 * 1024;
-  const start = Math.max(0, stat.size - cap);
-  const len = stat.size - start;
+  const requested = Number.isFinite(Number(bytes)) ? Number(bytes) : TAIL_READ_DEFAULT_BYTES;
+  const cap = Math.max(1024, Math.min(TAIL_READ_MAX_BYTES, requested));
+  const windowStart = Math.max(0, stat.size - cap);
+  const len = stat.size - windowStart;
   const buf = Buffer.alloc(len);
-  const fd = fs.openSync(logPath, 'r');
-  try { fs.readSync(fd, buf, 0, len, start); } finally { fs.closeSync(fd); }
-  return { ok: true, text: buf.toString('utf8').split('\n').slice(-lines).join('\n'), logPath };
+  if (len > 0) {
+    const fd = fs.openSync(logPath, 'r');
+    try { fs.readSync(fd, buf, 0, len, windowStart); } finally { fs.closeSync(fd); }
+  }
+  let text = buf.toString('utf8');
+  // If we started mid-file, the first "line" is partial. Drop it so callers
+  // never see half a record.
+  if (windowStart > 0) {
+    const nl = text.indexOf('\n');
+    if (nl >= 0) text = text.slice(nl + 1);
+  }
+  // Apply the soft line cap.
+  const lineCap = Math.max(1, Math.min(Number(lines) || 100, 5000));
+  const split = text.split('\n');
+  text = split.slice(-lineCap).join('\n');
+  // Even with the line cap, the result could exceed the byte budget if lines
+  // are very long. Trim from the front, keeping line boundaries.
+  let textBytes = Buffer.byteLength(text, 'utf8');
+  if (textBytes > cap) {
+    const overflow = textBytes - cap;
+    const sliced = Buffer.from(text, 'utf8').slice(overflow).toString('utf8');
+    const nl = sliced.indexOf('\n');
+    text = nl >= 0 ? sliced.slice(nl + 1) : sliced;
+    textBytes = Buffer.byteLength(text, 'utf8');
+  }
+  return {
+    ok: true,
+    text,
+    logPath,
+    logSize: stat.size,
+    returnedBytes: textBytes,
+    truncated: textBytes < stat.size,
+  };
 }
 
 function logHistory(paths, name) {
@@ -725,8 +818,10 @@ function discoverProjects(roots, opts) {
 module.exports = {
   TASK_NAME_RE, PROJECT_NAME_RE, findTasksFile,
   pathsFor, ensureRuntimeDirs, createTasksFile, loadConfig, loadTasks, resolveCwd,
-  readState, writeState, isAlive, processFingerprint, reconcile, startTask, stopTask, restartTask, listTasks,
+  readState, writeState, isAlive, pidAlive, processFingerprint, reconcile, startTask, stopTask, restartTask, listTasks,
   logPathFor, newLogPath, currentLogPath, listLogFiles, logHistory,
-  tailLog, validateTaskCommand, validateNewTask, addTask, removeTask, loadConfigForWrite,
+  tailLog, TAIL_READ_DEFAULT_BYTES, TAIL_READ_MAX_BYTES,
+  validateTaskCommand, validateNewTask, addTask, removeTask, loadConfigForWrite,
   discoverProjects, sanitizeProjectName, scanForTasksFiles, SCAN_EXCLUDED_DIRS,
+  _clearVerifiedFingerprintCache, _verifiedFingerprintCacheSize,
 };

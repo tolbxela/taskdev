@@ -221,6 +221,7 @@ withTempProject(({ tasksFile }) => {
 withTempProject(({ tasksFile }) => {
   const currentFingerprint = core.processFingerprint(process.pid);
   if (!currentFingerprint) return;
+  core._clearVerifiedFingerprintCache();
   const paths = core.pathsFor(tasksFile);
   core.writeState(paths.stateFile, {
     tasks: {
@@ -236,6 +237,57 @@ withTempProject(({ tasksFile }) => {
   });
   const { state } = core.reconcile(core.readState(paths.stateFile));
   assert.equal(state.tasks.stale, undefined);
+});
+
+// Fingerprint verification is cached per PID so reconcile doesn't spawn
+// wmic/powershell on every tick. Observe the cache directly: after one
+// successful isAlive() it must contain the PID, and stay flat across more
+// calls. pidAlive on our own process is cheap so the loop is safe.
+{
+  const realFp = core.processFingerprint(process.pid);
+  if (realFp) {
+    core._clearVerifiedFingerprintCache();
+    assert.equal(core._verifiedFingerprintCacheSize(), 0);
+    const entry = { pid: process.pid, processFingerprint: realFp };
+    assert.equal(core.isAlive(entry), true);
+    assert.equal(core._verifiedFingerprintCacheSize(), 1,
+      'first isAlive should populate the verified-fingerprint cache');
+    for (let i = 0; i < 5; i++) assert.equal(core.isAlive(entry), true);
+    assert.equal(core._verifiedFingerprintCacheSize(), 1,
+      'subsequent isAlive calls must reuse the cached fingerprint');
+    // A dead PID must be evicted so a real PID reuse gets re-verified.
+    assert.equal(core.isAlive({ pid: 99999999, processFingerprint: 'x' }), false);
+    assert.equal(core._verifiedFingerprintCacheSize(), 1);
+  }
+}
+
+// tailLog: byte budget caps the returned text even when many lines fit.
+withTempProject(({ tasksFile }) => {
+  const paths = core.ensureRuntimeDirs(core.pathsFor(tasksFile));
+  const logPath = core.newLogPath(paths, 'big');
+  // Build a ~200 KB log with predictable lines.
+  const line = 'x'.repeat(200);
+  const lines = [];
+  for (let i = 0; i < 1000; i++) lines.push(`${i}-${line}`);
+  fs.writeFileSync(logPath, lines.join('\n') + '\n');
+
+  const def = core.tailLog(paths, 'big', 1000);
+  assert.equal(def.ok, true);
+  assert.ok(def.returnedBytes <= core.TAIL_READ_DEFAULT_BYTES,
+    `default tail should fit in ${core.TAIL_READ_DEFAULT_BYTES} bytes, got ${def.returnedBytes}`);
+  assert.equal(def.truncated, true);
+
+  const small = core.tailLog(paths, 'big', 1000, undefined, 4096);
+  assert.equal(small.ok, true);
+  assert.ok(small.returnedBytes <= 4096, `byte budget honored: ${small.returnedBytes}`);
+  assert.equal(small.truncated, true);
+  // Last line of the file must be present in the returned tail.
+  assert.match(small.text, /999-x{10,}\n?$/);
+
+  // bytes above TAIL_READ_MAX_BYTES is clamped, not honored verbatim.
+  const huge = core.tailLog(paths, 'big', 1000, undefined, 10 * 1024 * 1024);
+  assert.ok(huge.returnedBytes <= core.TAIL_READ_MAX_BYTES,
+    'oversized bytes should be clamped to TAIL_READ_MAX_BYTES');
 });
 
 withTempProject(({ tasksFile }) => {
