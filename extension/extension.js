@@ -6,6 +6,76 @@ const core = require('./core.cjs');
 let output = null;
 function log(msg) { if (output) output.appendLine(`[${new Date().toISOString()}] ${msg}`); }
 
+// Per-task output channels for log tailing. Key: "<tasksFile>:<taskName>"
+const _logChannels = new Map();
+
+function showLog(elem) {
+  if (!elem || elem.kind !== 'task' || !core.TASK_NAME_RE.test(elem.name)) return;
+  const key = `${elem._project.paths.tasksFile}:${elem.name}`;
+
+  // Reuse an existing channel for this task if it's still open.
+  if (_logChannels.has(key)) {
+    _logChannels.get(key).channel.show(true);
+    return;
+  }
+
+  const logPath = core.currentLogPath(elem._project.paths, elem.name);
+  if (!logPath || !fs.existsSync(logPath)) {
+    vscode.window.showInformationMessage(`taskdev: no log yet for "${elem.name}"`);
+    return;
+  }
+
+  const channel = vscode.window.createOutputChannel(`taskdev: ${elem.name}`);
+  let watcher = null;
+  let readOffset = 0;
+
+  function appendFrom(offset) {
+    let stat;
+    try { stat = fs.statSync(logPath); } catch { return offset; }
+    if (stat.size <= offset) return offset;
+    const len = stat.size - offset;
+    const buf = Buffer.alloc(len);
+    const fd = fs.openSync(logPath, 'r');
+    try { fs.readSync(fd, buf, 0, len, offset); } finally { fs.closeSync(fd); }
+    channel.append(buf.toString('utf8'));
+    return offset + len;
+  }
+
+  // Seed with tail (last 200 lines / 64 KB).
+  const tail = core.tailLog(elem._project.paths, elem.name, 200);
+  if (tail.ok) {
+    if (tail.truncated) channel.appendLine(`--- log truncated, showing tail (${tail.logSize} bytes total) ---`);
+    channel.append(tail.text);
+    // Position read cursor at end of file so the watcher only appends new bytes.
+    try { readOffset = fs.statSync(logPath).size; } catch { readOffset = 0; }
+  }
+
+  channel.show(true);
+
+  function stopWatcher() {
+    if (watcher) { try { watcher.close(); } catch {} watcher = null; }
+    _logChannels.delete(key);
+  }
+
+  // Follow the file while the task is running.
+  if (elem.status === 'running') {
+    try {
+      watcher = fs.watch(logPath, () => {
+        readOffset = appendFrom(readOffset);
+        // Stop following once the task is no longer running.
+        const tasks = core.listTasks(elem._project.paths, { reconcile: false });
+        const t = tasks.find(x => x.name === elem.name);
+        if (!t || t.status !== 'running') stopWatcher();
+      });
+      watcher.on('error', stopWatcher);
+    } catch { /* file watching not available, static tail is fine */ }
+  }
+
+  // Clean up when the user closes the panel.
+  channel.onDidDispose ? channel.onDidDispose(stopWatcher) : null;
+  _logChannels.set(key, { channel, stopWatcher });
+}
+
 function atomicWriteFile(filePath, data) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const tmp = filePath + '.tmp';
@@ -149,13 +219,29 @@ function maybePromptMcpInstallAfterUpdate(ctx) {
   const version = ctx.extension?.packageJSON?.version;
   if (!version) return;
 
-  const key = 'taskdev.lastActivatedVersion';
-  const previous = ctx.globalState.get(key);
-  ctx.globalState.update(key, version);
-  if (!previous || previous === version) return;
+  // Track both the version AND the resolved MCP entry path. The path can
+  // change without the version changing (e.g. when we move from an
+  // unbundled mcp.mjs at the package root to a bundled dist/mcp.mjs);
+  // existing MCP host configs still point at the old location, so we want
+  // to prompt the user to re-run "Install MCP config" in that case too.
+  const versionKey = 'taskdev.lastActivatedVersion';
+  const entryKey = 'taskdev.lastActivatedMcpEntry';
+  const previousVersion = ctx.globalState.get(versionKey);
+  const previousEntry = ctx.globalState.get(entryKey);
+  const currentEntry = getMcpEntryPath();
+  ctx.globalState.update(versionKey, version);
+  ctx.globalState.update(entryKey, currentEntry);
 
+  if (!previousVersion) return;
+  const versionChanged = previousVersion !== version;
+  const entryChanged = typeof previousEntry === 'string' && previousEntry !== currentEntry;
+  if (!versionChanged && !entryChanged) return;
+
+  const reason = entryChanged && !versionChanged
+    ? `TaskDev's MCP entry path moved (${previousEntry} -> ${currentEntry}).`
+    : `TaskDev updated to ${version}.`;
   vscode.window.showInformationMessage(
-    `TaskDev updated to ${version}. Review MCP configs so agents point at this extension version?`,
+    `${reason} Review MCP configs so agents point at this extension version?`,
     'Review MCP configs',
   ).then(choice => {
     if (choice === 'Review MCP configs') {
@@ -197,6 +283,18 @@ function defaultTaskIcon(task) {
 }
 
 function taskThemeIcon(task) {
+  // Exit states override the configured per-task icon: the warning is
+  // load-bearing and shouldn't be hidden by a custom "flame" icon.
+  if (task.status === 'exited') {
+    const code = task.lastExit?.code;
+    if (code === 0) {
+      return new vscode.ThemeIcon('pass', new vscode.ThemeColor('charts.green'));
+    }
+    return new vscode.ThemeIcon('error', new vscode.ThemeColor('charts.red'));
+  }
+  if (task.status === 'exited-unknown') {
+    return new vscode.ThemeIcon('warning', new vscode.ThemeColor('charts.yellow'));
+  }
   const configured = task.icon;
   const fallbackIcon = defaultTaskIcon(task);
   const id = typeof configured === 'string'
@@ -214,6 +312,18 @@ function taskThemeIcon(task) {
     : new vscode.ThemeIcon(id);
 }
 
+// Format the exit reason for sidebar descriptions and tooltips. Windows
+// crash codes (0xCxxxxxxx) are huge unsigned integers — render them as
+// hex when they look like NTSTATUS to keep the description scannable.
+function formatExitReason(lastExit) {
+  if (!lastExit) return 'exited';
+  if (lastExit.signal) return `killed (${lastExit.signal})`;
+  const c = lastExit.code;
+  if (c === null || c === undefined) return 'exited';
+  if (c >= 0xC0000000) return `exited 0x${c.toString(16).toUpperCase()}`;
+  return `exited code ${c}`;
+}
+
 function taskTooltip(task) {
   const lines = [];
   lines.push(task.name);
@@ -222,6 +332,9 @@ function taskTooltip(task) {
   if (task.type) lines.push(`type: ${task.type}`);
   if (task.pid) lines.push(`pid: ${task.pid}`);
   if (task.uptimeMs) lines.push(`uptime: ${formatUptime(task.uptimeMs)}`);
+  if (task.lastExit) {
+    lines.push(`${formatExitReason(task.lastExit)} at ${new Date(task.lastExit.at).toLocaleString()}`);
+  }
   if (task.logPath) lines.push(`log: ${task.logPath}`);
   return lines.join('\n');
 }
@@ -325,10 +438,14 @@ class TreeProvider {
     const t = elem;
     const item = new vscode.TreeItem(t.name, vscode.TreeItemCollapsibleState.None);
     item.id = `task:${t._project.paths.tasksFile}:${t.name}`;
-    const detail = firstDetailLine(t.detail);
-    item.description = t.status === 'running'
-      ? `running${t.uptimeMs ? ` · ${formatUptime(t.uptimeMs)}` : ''}`
-      : detail;
+    if (t.status === 'running') {
+      item.description = `running${t.uptimeMs ? ` · ${formatUptime(t.uptimeMs)}` : ''}`;
+    } else if (t.status === 'exited' || t.status === 'exited-unknown') {
+      const reason = t.status === 'exited-unknown' ? 'exited (no signal)' : formatExitReason(t.lastExit);
+      item.description = reason;
+    } else {
+      item.description = '';
+    }
     item.tooltip = taskTooltip(t);
     item.contextValue = t.status;
     item.iconPath = taskThemeIcon(t);
@@ -490,17 +607,6 @@ function maybeOpenBrowser(task) {
   }, 1500);
 }
 
-function showLog(elem) {
-  if (!elem || elem.kind !== 'task' || !core.TASK_NAME_RE.test(elem.name)) return;
-  const logPath = core.currentLogPath(elem._project.paths, elem.name);
-  if (!logPath || !fs.existsSync(logPath)) {
-    vscode.window.showInformationMessage(`taskdev: no log yet for "${elem.name}"`);
-    return;
-  }
-  vscode.workspace.openTextDocument(logPath).then(doc =>
-    vscode.window.showTextDocument(doc, { preview: true })
-  );
-}
 
 function activate(ctx) {
   output = vscode.window.createOutputChannel('taskdev');
@@ -535,6 +641,16 @@ function activate(ctx) {
       // apart from organic visits.
       vscode.env.openExternal(vscode.Uri.parse('https://taskdev.dev/contact?from=extension'));
     }),
+    vscode.commands.registerCommand('taskdev.importVscodeTasks', () => importVscodeTasksCommand(ctx)),
+    vscode.commands.registerCommand('taskdev.clearExit', elem => {
+      // Reuses stopTask's exit-state cleanup branch: when the entry is
+      // already exited, the call just deletes the state record (the
+      // explicit user "I saw the warning" acknowledgement). No extra
+      // public API needed in core.
+      if (!elem || elem.kind !== 'task') return;
+      core.stopTask(elem.name, elem._project.paths);
+      provider.refresh();
+    }),
   );
 
   const watchers = new Map();
@@ -566,6 +682,90 @@ function activate(ctx) {
     provider.refresh();
   }, null, ctx.subscriptions);
   maybePromptMcpInstallAfterUpdate(ctx);
+  // Fire-and-forget: ask once per workspace if there's a .vscode/tasks.json
+  // but no taskdev.json. Imported projects are already visible read-only in
+  // the sidebar; the prompt only offers to make them editable by writing a
+  // real taskdev.json. Declining permanently is remembered per workspace.
+  maybePromptImportVscodeTasks(ctx).catch(err => {
+    if (output) output.appendLine(`taskdev: vscode-tasks prompt failed: ${err && err.message}`);
+  });
+}
+
+// Shared by the activation prompt AND the manual command. Returns true on
+// success so the prompt loop can suppress further nagging for this project.
+async function runVscodeTasksImport(project) {
+  const target = path.join(project.root, 'taskdev.json');
+  const r = core.materializeVscodeTasks(project.tasksFile, target);
+  if (!r.ok) {
+    vscode.window.showWarningMessage(`taskdev: ${r.error}`);
+    return false;
+  }
+  provider.refresh();
+  try {
+    const doc = await vscode.workspace.openTextDocument(r.tasksFile);
+    await vscode.window.showTextDocument(doc);
+  } catch { /* opening the file is a nice-to-have */ }
+  vscode.window.showInformationMessage(
+    `taskdev: imported ${r.tasksCount} task${r.tasksCount === 1 ? '' : 's'} into taskdev.json.`,
+  );
+  return true;
+}
+
+async function maybePromptImportVscodeTasks(ctx) {
+  const projects = discoverWorkspaceProjects();
+  const imported = projects.filter(p => p.imported === 'vscode');
+  if (imported.length === 0) return;
+  for (const p of imported) {
+    const stateKey = `taskdev.declinedVscodeImport.${p.root}`;
+    if (ctx.workspaceState.get(stateKey)) continue;
+    let tasksCount;
+    try { tasksCount = core.loadTasks(p.tasksFile).length; }
+    catch { tasksCount = 0; }
+    if (!tasksCount) continue;
+    const choice = await vscode.window.showInformationMessage(
+      `TaskDev: found ${tasksCount} task${tasksCount === 1 ? '' : 's'} in \`.vscode/tasks.json\` for "${p.name}". Create a \`taskdev.json\` so they're editable in TaskDev and the agent can add more? Your existing \`.vscode/tasks.json\` stays put.`,
+      'Create taskdev.json',
+      'Not now',
+      "Don't show again",
+    );
+    if (choice === 'Create taskdev.json') {
+      await runVscodeTasksImport(p);
+    } else if (choice === "Don't show again") {
+      ctx.workspaceState.update(stateKey, true);
+    }
+  }
+}
+
+// Command palette entry. Lets users re-trigger the import after dismissing
+// the activation prompt, or run it manually any time. Clears the
+// "don't show again" suppression for the project being imported so the
+// state stays consistent.
+async function importVscodeTasksCommand(ctx) {
+  const projects = discoverWorkspaceProjects().filter(p => p.imported === 'vscode');
+  if (projects.length === 0) {
+    vscode.window.showInformationMessage(
+      'taskdev: no .vscode/tasks.json found in any workspace folder without an existing taskdev.json.',
+    );
+    return;
+  }
+  let target;
+  if (projects.length === 1) {
+    target = projects[0];
+  } else {
+    const picks = projects.map(p => ({
+      label: p.name,
+      description: p.tasksFile,
+      project: p,
+    }));
+    const picked = await vscode.window.showQuickPick(picks, {
+      placeHolder: 'Import .vscode/tasks.json from which workspace folder?',
+    });
+    if (!picked) return;
+    target = picked.project;
+  }
+  if (await runVscodeTasksImport(target)) {
+    ctx.workspaceState.update(`taskdev.declinedVscodeImport.${target.root}`, undefined);
+  }
 }
 
 function deactivate() {
