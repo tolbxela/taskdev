@@ -12,7 +12,7 @@ const { title, description, activeSlug } = Astro.props;
 
 const all = await getCollection('docs');
 const nav = all
-  .map((e) => ({ slug: e.slug, title: e.data.title, order: e.data.order }))
+  .map((e) => ({ id: e.id.replace(/\.md$/, ''), title: e.data.title, order: e.data.order }))
   .sort((a, b) => a.order - b.order);
 ---
 <Base title={title} description={description}>
@@ -29,8 +29,8 @@ const nav = all
         <a href="/docs" class={activeSlug === undefined ? 'active' : ''}>Overview</a>
         {nav.map((n) => (
           <a
-            href={`/docs/${n.slug}`}
-            class={activeSlug === n.slug ? 'active' : ''}
+            href={`/docs/${n.id}`}
+            class={activeSlug === n.id ? 'active' : ''}
           >{n.title}</a>
         ))}
       </nav>

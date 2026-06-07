@@ -3,7 +3,7 @@ import DocsLayout from '../../layouts/DocsLayout.astro';
 import { getCollection } from 'astro:content';
 
 const docs = (await getCollection('docs'))
-  .map((e) => ({ slug: e.slug, ...e.data }))
+  .map((e) => ({ id: e.id.replace(/\.md$/, ''), ...e.data }))
   .sort((a, b) => a.order - b.order);
 ---
 <DocsLayout
@@ -19,7 +19,7 @@ const docs = (await getCollection('docs'))
   <ul class="docs-index">
     {docs.map((d) => (
       <li>
-        <a href={`/docs/${d.slug}`}>
+        <a href={`/docs/${d.id}`}>
           <span class="docs-index-title">{d.title}</span>
           <span class="docs-index-summary">{d.summary}</span>
         </a>

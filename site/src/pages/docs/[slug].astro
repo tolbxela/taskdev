@@ -1,22 +1,23 @@
 ---
 import DocsLayout from '../../layouts/DocsLayout.astro';
-import { getCollection } from 'astro:content';
+import { getCollection, render } from 'astro:content';
 
 export async function getStaticPaths() {
   const docs = await getCollection('docs');
   return docs.map((entry) => ({
-    params: { slug: entry.slug },
+    params: { slug: entry.id.replace(/\.md$/, '') },
     props: { entry },
   }));
 }
 
 const { entry } = Astro.props;
-const { Content } = await entry.render();
+const { Content } = await render(entry);
+const slug = entry.id.replace(/\.md$/, '');
 ---
 <DocsLayout
   title={`${entry.data.title} · TaskDev Docs`}
   description={entry.data.summary}
-  activeSlug={entry.slug}
+  activeSlug={slug}
 >
   <h1>{entry.data.title}</h1>
   <p class="muted">{entry.data.summary}</p>
