@@ -1,12 +1,11 @@
 FROM node:20-alpine AS build
-WORKDIR /app/site
+WORKDIR /app
 
-COPY site/package*.json ./
+COPY package*.json ./
 RUN npm ci
 
-COPY docs /app/docs
-COPY site ./
+COPY . .
 RUN npm run build
 
 FROM nginx:alpine
-COPY --from=build /app/site/dist /usr/share/nginx/html
+COPY --from=build /app/dist /usr/share/nginx/html

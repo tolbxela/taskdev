@@ -93,6 +93,21 @@ function writeIfChanged(filePath, content) {
 }
 
 function main() {
+  if (!fs.existsSync(srcDir)) {
+    const complete = DOCS.every((doc) =>
+      fs.existsSync(path.join(dstDir, `${doc.slug}.md`))
+    );
+    if (!complete) {
+      throw new Error(
+        'repo-root docs are unavailable and generated site docs are incomplete'
+      );
+    }
+    // A standalone /site container build uses the generated copies committed
+    // to the repository. Full-repository builds continue to refresh them.
+    console.log(`sync-docs: using ${DOCS.length} generated file(s)`);
+    return;
+  }
+
   ensureDir(dstDir);
   let written = 0;
   for (const doc of DOCS) {
