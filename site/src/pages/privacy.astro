@@ -9,21 +9,25 @@ import Base from '../layouts/Base.astro';
     <h1>Privacy</h1>
     <p class="muted">What this site collects, in plain terms.</p>
 
-    <h2>Analytics</h2>
+    <h2>Optional analytics</h2>
     <p>
-      This site uses <a href="https://umami.is/">Umami</a> for anonymous, aggregated visit
-      statistics. Umami does not use cookies, does not collect personal data, and does not
-      store full IP addresses. Data is hosted by Umami Cloud.
+      If you enable analytics, this site loads <a href="https://umami.is/">Umami</a> for anonymous,
+      aggregated visit statistics. Umami does not use cookies, does not collect personal data,
+      and does not store full IP addresses. Analytics is hosted by Tolbxela.
+    </p>
+    <p>
+      Your analytics preference is stored in browser <code>localStorage</code> under
+      <code>taskdev-analytics-consent</code>. If you choose "No thanks", the analytics script is
+      not loaded.
     </p>
 
-    <h2>Cookies</h2>
-    <p>This site does not set any cookies.</p>
+    <h2>Browser storage</h2>
+    <p>This site does not set cookies. It stores only your analytics preference in your browser.</p>
 
     <h2>Hosting</h2>
     <p>
-      The site is hosted on GitHub Pages. GitHub may log requests (IP, user agent, referrer)
-      for security and abuse prevention as described in the
-      <a href="https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement">GitHub privacy statement</a>.
+      The site is hosted on infrastructure operated by Tolbxela. The web server may temporarily
+      log request details such as IP address and user agent for security and troubleshooting.
     </p>
 
     <h2>The TaskDev extension</h2>
