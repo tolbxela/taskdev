@@ -1,8 +1,8 @@
 services:
   taskdev-dev:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: site/Dockerfile
     restart: unless-stopped
     expose:
       - "80"
