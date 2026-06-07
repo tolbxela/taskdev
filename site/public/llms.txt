@@ -1,0 +1,37 @@
+# taskdev.dev
+
+TaskDev is a local task runner for developers and AI coding agents.
+It provides a VS Code and Windsurf extension plus an MCP server for starting,
+stopping, restarting, and inspecting long-running development tasks.
+
+## Website
+
+- [taskdev.dev](https://taskdev.dev)
+
+## Pages
+
+- [Home](https://taskdev.dev/)
+- [Documentation](https://taskdev.dev/docs/)
+- [Usage guide](https://taskdev.dev/docs/usage/)
+- [Configuration reference](https://taskdev.dev/docs/config/)
+- [Security and sandboxing](https://taskdev.dev/docs/security/)
+- [Contact](https://taskdev.dev/contact/)
+- [Privacy](https://taskdev.dev/privacy/)
+
+## Installation
+
+- [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=Tolbxela.taskdev)
+- [Open VSX Registry](https://open-vsx.org/extension/tolbxela/taskdev)
+- [GitHub repository](https://github.com/tolbxela/taskdev)
+
+## Key facts
+
+- TaskDev runs tasks as local processes on the user's machine.
+- Task definitions live in a project-local `taskdev.json` file.
+- The editor extension and MCP server share the same task state and logs.
+- TaskDev is not a hosted task runner, CI service, or project-management platform.
+- The extension does not send telemetry or task logs to TaskDev.
+
+## Sitemap
+
+- [Sitemap](https://taskdev.dev/sitemap-index.xml)
