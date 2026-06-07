@@ -12,7 +12,7 @@
       "name": "preview",
       "type": "npm",
       "command": "npm run preview",
-      "detail": "Serve dist/ as it would be on Pages",
+      "detail": "Serve the production build from dist/",
       "icon": "eye"
     },
     {
