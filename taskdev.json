@@ -1,41 +1,50 @@
 {
   "project": "TaskDev",
-  "tasks": [
-    {
-      "name": "compile-extension",
-      "command": "node scripts/package-vsix.cjs",
-      "category": "Extension"
-    },
-    {
-      "name": "log-smoke",
-      "command": "npm run log-smoke",
-      "cwd": "extension",
-      "category": "Extension"
-    },
-    {
-      "name": "site-dev",
-      "command": "npm run dev",
-      "cwd": "site",
-      "env": {
-        "PORT": "4322"
+  "tasks": {
+    "Examples": [
+      {
+        "name": "log-smoke",
+        "command": "npm run log-smoke",
+        "cwd": "extension"
       },
-      "openBrowser": true,
-      "category": "Web Site"
-    },
-    {
-      "name": "site-build",
-      "command": "npm run build",
-      "cwd": "site",
-      "category": "Web Site"
-    },
-    {
-      "name": "site-preview",
-      "command": "npm run preview",
-      "cwd": "site",
-      "env": {
-        "PORT": "4322"
+      {
+        "name": "taskdev-home",
+        "openBrowser": "https://taskdev.dev"
       },
-      "category": "Web Site"
-    }
-  ]
+      {
+        "name": "taskdev-contact",
+        "openBrowser": "https://taskdev.dev/contact"
+      }
+    ],
+    "Extension": [
+      {
+        "name": "compile-extension",
+        "command": "node scripts/package-vsix.cjs"
+      }
+    ],
+    "Web Site": [
+      {
+        "name": "site-dev",
+        "command": "npm run dev",
+        "cwd": "site",
+        "env": {
+          "PORT": "4322"
+        },
+        "openBrowser": true
+      },
+      {
+        "name": "site-build",
+        "command": "npm run build",
+        "cwd": "site"
+      },
+      {
+        "name": "site-preview",
+        "command": "npm run preview",
+        "cwd": "site",
+        "env": {
+          "PORT": "4322"
+        }
+      }
+    ]
+  }
 }
