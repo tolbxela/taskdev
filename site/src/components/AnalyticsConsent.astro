@@ -1,0 +1,352 @@
+---
+/**
+ * AnalyticsConsent — drop-in Umami consent banner for any Astro site.
+ *
+ * Copy this file into your project and use it like:
+ *
+ *   <AnalyticsConsent
+ *     src="https://umami.example.com/script.js"
+ *     websiteId="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+ *   />
+ *
+ * Add a reopen trigger anywhere: <a href="#" data-consent-reopen>Analytics</a>
+ *
+ * Theming: override --consent-accent, --consent-bg-panel, --consent-bg-input
+ * via a parent selector or :root. Inherits --fg, --muted, --rule from the page.
+ */
+interface Props {
+  /** Umami script URL */
+  src: string;
+  /** Umami website ID */
+  websiteId: string;
+  /** localStorage key (default: "analytics-consent") */
+  storageKey?: string;
+  /** Banner title */
+  title?: string;
+  /** Banner description (supports HTML) */
+  description?: string;
+  /** Toggle label */
+  toggleLabel?: string;
+  /** Decline button label */
+  declineLabel?: string;
+  /** Accept button label */
+  acceptLabel?: string;
+}
+
+const {
+  src,
+  websiteId,
+  storageKey = 'analytics-consent',
+  title = 'Analytics',
+  description = 'This site uses privacy-friendly <a href="/privacy">Umami</a> analytics — anonymous, aggregated page views only. No cookies, no cross-site tracking.',
+  toggleLabel = 'Privacy-friendly analytics',
+  declineLabel = 'Decline all',
+  acceptLabel = 'Accept',
+} = Astro.props;
+
+const configId = `__ac_${storageKey.replace(/[^a-zA-Z0-9]/g, '_')}`;
+---
+<script is:inline define:vars={{ configId, src, websiteId, storageKey }}>
+  window[configId] = { src, websiteId, storageKey };
+</script>
+<div class="consent" data-consent data-config={configId} hidden role="dialog" aria-modal="false" aria-labelledby="consent-title" aria-describedby="consent-body">
+  <div class="consent-card">
+    <div class="consent-head">
+      <span class="consent-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 3v18h18" />
+          <rect x="7" y="13" width="3" height="5" rx="0.5" fill="currentColor" stroke="none" />
+          <rect x="12" y="9" width="3" height="9" rx="0.5" fill="currentColor" stroke="none" />
+          <rect x="17" y="5" width="3" height="13" rx="0.5" fill="currentColor" stroke="none" />
+        </svg>
+      </span>
+      <div class="consent-headtext">
+        <div class="consent-titlerow">
+          <h2 id="consent-title">{title}</h2>
+          <span class="consent-badge" data-consent-badge hidden>Saved</span>
+        </div>
+        <p id="consent-body" set:html={description} />
+      </div>
+    </div>
+    <button type="button" class="consent-toggle" role="switch" aria-checked="false" data-consent-toggle>
+      <span class="consent-toggle-text">
+        <span class="consent-toggle-title">{toggleLabel}</span>
+        <span class="consent-toggle-state" data-consent-state>Off</span>
+      </span>
+      <span class="consent-track" aria-hidden="true"><span class="consent-knob"></span></span>
+    </button>
+    <div class="consent-actions">
+      <button type="button" class="consent-btn" data-consent-decline>{declineLabel}</button>
+      <button type="button" class="consent-btn consent-btn--accept" data-consent-save>{acceptLabel}</button>
+    </div>
+  </div>
+</div>
+<script is:inline define:vars={{ configId }}>
+  (function () {
+    var cfg = window[configId];
+    if (!cfg) return;
+    var KEY = cfg.storageKey;
+    var tag = 'script[data-ac-' + KEY + ']';
+
+    function readConsent() {
+      try {
+        var v = localStorage.getItem(KEY);
+        return v === 'granted' || v === 'denied' ? v : null;
+      } catch (_) { return null; }
+    }
+
+    function writeConsent(v) {
+      try { localStorage.setItem(KEY, v); } catch (_) {}
+    }
+
+    function loadAnalytics() {
+      if (document.querySelector(tag)) return;
+      var s = document.createElement('script');
+      s.async = true;
+      s.defer = true;
+      s.src = cfg.src;
+      s.setAttribute('data-website-id', cfg.websiteId);
+      s.setAttribute('data-ac-' + KEY, '');
+      document.head.appendChild(s);
+    }
+
+    function flashSaved(badge) {
+      if (!badge) return;
+      badge.hidden = false;
+      badge.classList.remove('is-flash');
+      void badge.offsetWidth;
+      badge.classList.add('is-flash');
+    }
+
+    function openConsent(banner) {
+      if (!banner) return;
+      if (banner.__seed) banner.__seed();
+      banner.hidden = false;
+      void banner.offsetWidth;
+      banner.classList.add('is-open');
+    }
+
+    function closeConsent(banner) {
+      if (!banner) return;
+      banner.classList.remove('is-open');
+      var done = function () {
+        banner.hidden = true;
+        banner.removeEventListener('transitionend', done);
+      };
+      banner.addEventListener('transitionend', done);
+    }
+
+    var banner = document.querySelector('[data-config="' + configId + '"]');
+    var reopen = document.querySelector('[data-consent-reopen]');
+
+    if (readConsent() === 'granted') loadAnalytics();
+
+    if (reopen) {
+      reopen.addEventListener('click', function (e) {
+        e.preventDefault();
+        openConsent(banner);
+      });
+    }
+
+    if (!banner) return;
+
+    var toggle = banner.querySelector('[data-consent-toggle]');
+    var stateLabel = banner.querySelector('[data-consent-state]');
+    var badge = banner.querySelector('[data-consent-badge]');
+    var pending = readConsent() === 'granted';
+
+    var syncToggle = function () {
+      if (toggle) toggle.setAttribute('aria-checked', pending ? 'true' : 'false');
+      banner.classList.toggle('is-on', pending);
+      if (stateLabel) stateLabel.textContent = pending ? 'On' : 'Off';
+    };
+
+    banner.__seed = function () {
+      var saved = readConsent();
+      pending = saved === 'granted';
+      syncToggle();
+      if (badge) badge.hidden = saved === null;
+    };
+    banner.__seed();
+
+    if (toggle) {
+      toggle.addEventListener('click', function () {
+        pending = !pending;
+        syncToggle();
+        if (badge) badge.hidden = true;
+      });
+    }
+
+    var commit = function (enabled) {
+      writeConsent(enabled ? 'granted' : 'denied');
+      if (enabled) loadAnalytics();
+      flashSaved(badge);
+      setTimeout(function () { closeConsent(banner); }, 650);
+    };
+
+    var save = banner.querySelector('[data-consent-save]');
+    var decline = banner.querySelector('[data-consent-decline]');
+    if (save) {
+      save.addEventListener('click', function () {
+        pending = true; syncToggle(); commit(true);
+      });
+    }
+    if (decline) {
+      decline.addEventListener('click', function () {
+        pending = false; syncToggle(); commit(false);
+      });
+    }
+
+    if (readConsent() === null) openConsent(banner);
+  })();
+</script>
+<style>
+  /* === Consent banner — self-contained, themeable === */
+  .consent {
+    --_accent: var(--consent-accent, #8be39b);
+    --_bg-panel: var(--consent-bg-panel, rgba(11, 13, 16, 0.86));
+    --_bg-input: var(--consent-bg-input, rgba(15, 18, 22, 0.55));
+
+    position: fixed;
+    inset: auto 0 0 0;
+    z-index: 40;
+    display: flex;
+    justify-content: center;
+    padding: 0 1rem 1rem;
+    pointer-events: none;
+  }
+  .consent[hidden] { display: none; }
+
+  .consent-card {
+    pointer-events: auto;
+    width: min(560px, 100%);
+    display: grid;
+    gap: 0.85rem;
+    padding: 1rem 1.1rem;
+    border: 1px solid var(--rule, rgba(255, 255, 255, 0.12));
+    border-radius: 10px;
+    background: var(--_bg-panel);
+    backdrop-filter: blur(18px) saturate(150%);
+    box-shadow: 0 24px 70px -28px rgba(0, 0, 0, 0.75);
+    transform: translateY(14px);
+    opacity: 0;
+    transition: transform 260ms ease, opacity 220ms ease;
+  }
+  .consent.is-open .consent-card { transform: translateY(0); opacity: 1; }
+
+  .consent-head { display: flex; align-items: flex-start; gap: 0.75rem; }
+  .consent-mark {
+    flex: none;
+    display: inline-grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+    border: 1px solid var(--rule, rgba(255, 255, 255, 0.12));
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--fg, #e9e9e9);
+  }
+  .consent-headtext { flex: 1; min-width: 0; }
+  .consent-titlerow { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem; }
+  .consent-head h2 { margin: 0; color: var(--fg, #e9e9e9); }
+  .consent-head p { margin: 0; color: var(--muted, #9aa3ad); font-size: 0.85rem; line-height: 1.5; }
+
+  .consent-badge {
+    padding: 0.1rem 0.45rem;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--_accent) 35%, transparent);
+    background: color-mix(in srgb, var(--_accent) 12%, transparent);
+    color: var(--_accent);
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .consent-badge[hidden] { display: none; }
+  .consent-badge.is-flash { animation: consent-saved 900ms ease; }
+  @keyframes consent-saved {
+    0%  { transform: scale(0.85); opacity: 0; }
+    25% { transform: scale(1.06); opacity: 1; }
+    60% { transform: scale(1); }
+  }
+
+  .consent-toggle {
+    appearance: none;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.75rem 0.85rem;
+    border: 1px solid var(--rule, rgba(255, 255, 255, 0.12));
+    border-radius: 8px;
+    background: var(--_bg-input);
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    text-align: left;
+  }
+  .consent-toggle:hover { border-color: rgba(255, 255, 255, 0.28); }
+  .consent-toggle-text { display: flex; flex-direction: column; gap: 0.05rem; }
+  .consent-toggle-title { font-size: 0.85rem; }
+  .consent-toggle-state {
+    color: var(--muted, #9aa3ad);
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .consent.is-on .consent-toggle-state { color: var(--_accent); }
+
+  .consent-track {
+    flex: none;
+    position: relative;
+    width: 40px;
+    height: 22px;
+    border-radius: 999px;
+    border: 1px solid var(--rule, rgba(255, 255, 255, 0.12));
+    background: rgba(154, 163, 173, 0.28);
+  }
+  .consent.is-on .consent-track { background: var(--_accent); border-color: transparent; }
+  .consent-knob {
+    position: absolute;
+    top: 50%;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #fff;
+    transform: translate(0, -50%);
+    transition: transform 180ms ease;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  }
+  .consent.is-on .consent-knob { transform: translate(18px, -50%); }
+
+  .consent-actions {
+    display: inline-flex;
+    align-self: flex-end;
+    gap: 0.25rem;
+  }
+  .consent-btn {
+    appearance: none;
+    border: 0;
+    border-radius: 6px;
+    padding: 0.45rem 0.8rem;
+    background: transparent;
+    color: var(--muted, #9aa3ad);
+    font: inherit;
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+  .consent-btn:hover { color: var(--fg, #e9e9e9); background: rgba(255, 255, 255, 0.06); }
+  .consent-btn--accept { color: var(--bg, #0b0d10); background: var(--_accent); }
+  .consent-btn--accept:hover { color: var(--bg, #0b0d10); background: var(--_accent); opacity: 0.9; }
+
+  @media (max-width: 480px) {
+    .consent-actions { align-self: stretch; }
+    .consent-btn { flex: 1; text-align: center; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .consent-card { transition: opacity 160ms ease; transform: none; }
+    .consent-knob { transition: none; }
+    .consent-badge.is-flash { animation: none; }
+  }
+</style>

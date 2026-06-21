@@ -1,0 +1,204 @@
+---
+import Base from '../layouts/Base.astro';
+
+const milestones = [
+  {
+    date: '2026-05-14',
+    label: 'May 14, 2026',
+    version: 'v0.1.20',
+    title: 'Faster and ready for monorepos',
+    text: 'Nested project discovery arrived without periodic scanning. Windows process checks became dramatically cheaper, while bounded log responses kept agent context predictable.',
+  },
+  {
+    date: '2026-05-10',
+    label: 'May 10-12, 2026',
+    version: 'v0.1.17 - v0.1.19',
+    title: 'From one folder to many projects',
+    text: 'Multi-root workspaces, project-aware MCP tools, categories, browser opening, safer shutdown, config creation, and a dedicated documentation site turned TaskDev into a workspace-level tool.',
+  },
+  {
+    date: '2026-05-08',
+    label: 'May 8, 2026',
+    version: 'v0.1.16',
+    title: 'Logs became durable',
+    text: 'Every run received a timestamped log with automatic pruning. Agents could inspect current and historical runs through both MCP tools and resources.',
+  },
+  {
+    date: '2026-05-04',
+    label: 'May 4, 2026',
+    version: 'v0.1.15',
+    title: 'Daily use became simpler',
+    text: 'TaskDev could create its own config, detect MCP targets, support Cursor, and present tasks with clearer icons, details, tooltips, and faster sidebar refreshes.',
+  },
+  {
+    date: '2026-05-03',
+    label: 'May 3, 2026',
+    version: 'v0.1.10 - v0.1.14',
+    title: 'Ready to publish',
+    text: 'Process supervision and file-backed logs became the shared foundation. Agent-added tasks gained confirmation and command sandboxing, and the extension was split into a clean publishable package.',
+  },
+  {
+    date: '2026-04-26',
+    label: 'April 26, 2026',
+    version: 'v0.1.1 - v0.1.9',
+    title: 'The first working loop',
+    text: 'TaskDev began as a VS Code sidebar for starting and stopping local tasks, then quickly gained MCP control, restart support, readable logs, state locking, and editor setup.',
+  },
+];
+---
+<Base
+  title="History · TaskDev"
+  description="A short history of TaskDev, from the first sidebar and MCP tools to multi-project support and faster local process supervision."
+>
+  <article class="history-page">
+    <header class="history-hero">
+      <div class="section-head"><h2>// project history</h2><span class="rule"></span></div>
+      <h1>Built one useful loop at a time.</h1>
+      <p class="muted">
+        TaskDev started as a small way to share local processes with coding agents.
+        These are the milestones that shaped it.
+      </p>
+    </header>
+
+    <ol class="timeline">
+      {milestones.map((milestone) => (
+        <li>
+          <div class="timeline-marker" aria-hidden="true"></div>
+          <div class="timeline-meta">
+            <time datetime={milestone.date}>{milestone.label}</time>
+            <span>{milestone.version}</span>
+          </div>
+          <h2>{milestone.title}</h2>
+          <p>{milestone.text}</p>
+        </li>
+      ))}
+    </ol>
+
+    <p class="history-more">
+      This is the short version. Read every release note in the
+      <a href="https://github.com/tolbxela/taskdev/blob/main/extension/CHANGELOG.md">extension changelog</a>
+      or the
+      <a href="https://github.com/tolbxela/taskdev/blob/main/site/CHANGELOG.md">website changelog</a>.
+    </p>
+  </article>
+
+  <style>
+    .history-page {
+      max-width: 760px;
+      margin: 0 auto;
+    }
+
+    .history-hero {
+      margin: 1rem 0 3rem;
+    }
+
+    .history-hero h1 {
+      max-width: 680px;
+      margin: 0 0 0.75rem;
+      font-size: clamp(2rem, 5vw, 3.5rem);
+      line-height: 1.05;
+      letter-spacing: -0.035em;
+    }
+
+    .history-hero p {
+      max-width: 620px;
+      margin: 0;
+      font-size: 1.02rem;
+      line-height: 1.7;
+    }
+
+    .timeline {
+      list-style: none;
+      margin: 0;
+      padding: 0 0 0 1.75rem;
+      border-left: 1px solid var(--rule-strong);
+    }
+
+    .timeline li {
+      position: relative;
+      padding: 0 0 2.75rem 1.5rem;
+    }
+
+    .timeline-marker {
+      position: absolute;
+      top: 0.35rem;
+      left: calc(-1.75rem - 5px);
+      width: 9px;
+      height: 9px;
+      border: 2px solid var(--bg);
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent);
+    }
+
+    .timeline-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem 0.8rem;
+      align-items: center;
+      margin-bottom: 0.4rem;
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .timeline-meta time {
+      color: var(--accent);
+    }
+
+    .timeline-meta span {
+      color: var(--muted);
+    }
+
+    .timeline h2 {
+      margin: 0 0 0.45rem;
+      font-size: 1.2rem;
+      letter-spacing: -0.01em;
+    }
+
+    .timeline p {
+      max-width: 66ch;
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    .history-more {
+      margin: 0 0 1rem;
+      padding: 1rem 1.1rem;
+      border: 1px solid var(--rule);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.025);
+      color: var(--muted);
+    }
+
+    .history-more a {
+      color: var(--fg);
+      border-bottom: 1px solid var(--rule-strong);
+    }
+
+    .history-more a:hover {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+
+    @media (max-width: 640px) {
+      .history-hero {
+        margin-bottom: 2.25rem;
+      }
+
+      .timeline {
+        padding-left: 1.25rem;
+      }
+
+      .timeline li {
+        padding-left: 1rem;
+      }
+
+      .timeline-marker {
+        left: calc(-1.25rem - 5px);
+      }
+    }
+  </style>
+</Base>
