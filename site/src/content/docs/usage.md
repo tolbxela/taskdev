@@ -6,7 +6,8 @@ source: "usage.md"
 ---
 Practical recipes for setting up TaskDev in real projects. For the precise
 allow-list and security rules, see [`security.md`](/docs/security). For the full
-`taskdev.json` schema and MCP tools reference, see [`config.md`](/docs/config).
+`taskdev.json` schema, `.vscode/tasks.json` support, and MCP tools reference,
+see [`config.md`](/docs/config).
 
 ## Contents
 
@@ -28,10 +29,10 @@ allow-list and security rules, see [`security.md`](/docs/security). For the full
    [Marketplace](https://marketplace.visualstudio.com/items?itemName=tolbxela.taskdev)
    or [Open VSX](https://open-vsx.org/extension/tolbxela/taskdev).
 2. Open the **TaskDev** view in the Activity Bar.
-3. Click **Open taskdev.json** (the title-bar icon). If no config exists,
+3. Click **Open task file** (the title-bar icon). If no config exists,
    TaskDev creates one in your workspace root and opens it.
-4. Replace the empty `tasks: []` with one or two real tasks. The sidebar
-   refreshes automatically on save.
+4. Replace or edit the two starter website tasks. The sidebar refreshes
+   automatically on save.
 5. Run **TaskDev: Install MCP config** from the command palette and pick
    the agents you want to wire up.
 
@@ -40,6 +41,10 @@ your agent can read over MCP.
 
 Add `.taskdev/` to `.gitignore` — it holds local PIDs and logs, never commit
 it.
+
+Already have `.vscode/tasks.json`? TaskDev shows those tasks directly when a
+workspace has no root `taskdev.json`. They are read-only in TaskDev, but can
+still be started, stopped, logged, and exposed over MCP.
 
 ---
 
@@ -53,7 +58,6 @@ it.
   "command": "npm run dev",
   "cwd": "apps/web",
   "detail": "Starts the Vite dev server",
-  "icon": "globe",
   "env": { "PORT": "5173" },
   "openBrowser": true
 }
@@ -69,7 +73,6 @@ opens `http://localhost:5173` after the server starts (see § 4).
   "name": "api",
   "command": "dotnet watch --project src/Api",
   "detail": "Starts the .NET API in watch mode",
-  "icon": "server-process",
   "env": { "ASPNETCORE_ENVIRONMENT": "Development" }
 }
 ```
@@ -85,8 +88,7 @@ breaking schema change.
   "name": "queue",
   "command": "npm run worker",
   "cwd": "services/worker",
-  "type": "worker",
-  "icon": { "id": "server-process", "color": "terminal.ansiYellow" }
+  "type": "worker"
 }
 ```
 
@@ -96,8 +98,7 @@ breaking schema change.
 {
   "name": "test",
   "command": "npm run test -- --run",
-  "detail": "Vitest single-pass run",
-  "icon": "beaker"
+  "detail": "Vitest single-pass run"
 }
 ```
 
@@ -107,7 +108,8 @@ can fire them, wait for exit, and read the tail of the log.
 ### 2.5 Grouping tasks with `category`
 
 Once you have more than a handful of tasks, add a `category` to each one
-and the sidebar renders them as collapsible folders:
+and the sidebar renders them as collapsible folders. The array form is editable
+from the sidebar:
 
 ```jsonc
 {
@@ -125,6 +127,28 @@ and the sidebar renders them as collapsible folders:
 - Group order follows the order categories first appear in the file.
 - Categories are UI-only. MCP tools, logs, and execution ignore them.
 
+For a more compact file, `tasks` can also be an object whose keys are category
+names:
+
+```jsonc
+{
+  "tasks": {
+    "Extension": [
+      { "name": "compile", "command": "node scripts/package-vsix.cjs" },
+      { "name": "log-smoke", "command": "npm run log-smoke", "cwd": "extension" }
+    ],
+    "Web Site": [
+      { "name": "site-dev", "command": "npm run dev", "cwd": "site", "openBrowser": true },
+      { "name": "site-build", "command": "npm run build", "cwd": "site" }
+    ]
+  }
+}
+```
+
+Grouped maps are read-only for task editing commands: start/stop/log/list work,
+but drag reorder, category edits, `taskdev_add`, and `taskdev_remove` require
+the array form.
+
 ### 2.6 Agent-friendly task names
 
 Names show up in tooltips, MCP responses, and tooltips. Keep them short,
@@ -136,14 +160,15 @@ Avoid: `Run my API`, `web-server-1`.
 ## 3. Multi-root workspaces
 
 TaskDev supports multi-root workspaces natively. Each workspace folder can
-have its own `taskdev.json`. The sidebar shows one node per project; the
+have its own `taskdev.json`, or a standard `.vscode/tasks.json` when you only
+need VS Code task compatibility. The sidebar shows one node per project; the
 MCP server exposes all of them at once.
 
 ### 3.1 Add a `taskdev.json` to a second folder
 
 Either:
 
-- Open the TaskDev view → click **Open taskdev.json**. Folders without a
+- Open the TaskDev view → click **Open task file**. Folders without a
   config show up as `Create in folder: <name>` entries.
 - Or right-click the folder in the Explorer → **Create taskdev.json in
   folder…**.
@@ -152,7 +177,8 @@ Either:
 
 The project name in the sidebar and in MCP comes from the optional
 `project` field in `taskdev.json`. If absent, TaskDev falls back to the
-folder name. Duplicates are disambiguated as `Name (folder)`.
+folder name. For `.vscode/tasks.json`, TaskDev uses the workspace folder name.
+Duplicates are disambiguated as `Name (folder)`.
 
 ```jsonc
 {
@@ -171,6 +197,25 @@ argument. The agent should:
 
 If `project` is omitted in a multi-root setup, the tool returns an error
 listing the available projects — so the agent self-corrects.
+
+### 3.4 Using `.vscode/tasks.json` without importing
+
+If a workspace folder has `.vscode/tasks.json` and no root `taskdev.json`,
+TaskDev reads the VS Code tasks directly. It maps each task's `label` to a
+safe TaskDev name by replacing unsupported characters with `-`, because MCP
+tool arguments and log filenames use `^[A-Za-z0-9_.-]{1,64}$`.
+
+Supported fields:
+
+- `label` / `taskName` → TaskDev task name and detail.
+- `command` + `args` → command line.
+- `options.cwd` → working directory.
+- `options.env` → environment.
+- `group` → TaskDev category.
+
+Direct VS Code task projects are read-only: start, stop, restart, status, and
+logs work; reordering, category edits, `taskdev_add`, and `taskdev_remove`
+require creating/importing a `taskdev.json`.
 
 ---
 
@@ -198,12 +243,15 @@ Examples:
 
 // HTTPS preview
 { "name": "preview", "command": "npm run preview", "openBrowser": "https://localhost:4173" }
+
+// Simple browser action — no process or dummy command
+{ "name": "contact", "openBrowser": "https://taskdev.dev/contact" }
 ```
 
-The browser opens ~1.5 s after start so the server has time to bind. If
-your server takes longer to come up (cold .NET, big webpack build), open
-the URL by hand the first time and let `openBrowser` cover the warm restart
-case.
+For command-backed tasks, the browser opens ~1.5 s after start so the server
+has time to bind. Browser-only tasks open immediately. If your server takes
+longer to come up (cold .NET, big webpack build), open the URL by hand the
+first time and let `openBrowser` cover the warm restart case.
 
 ---
 
@@ -245,7 +293,7 @@ most of TaskDev. Drop these as house rules / system prompt fragments.
 
 > Whenever you need to run, restart, or read the output of a dev process,
 > use the `taskdev_*` MCP tools instead of running a shell command. Tasks
-> are defined in `taskdev.json` at the workspace root.
+> are defined in `taskdev.json` or `.vscode/tasks.json` at the workspace root.
 >
 > Before starting a task, call `taskdev_list` to see whether it is already
 > running. To capture build/test output, call `taskdev_logs` with the task
@@ -282,6 +330,11 @@ sensitive env variables (`PATH`, `NODE_OPTIONS`, dynamic-loader vars). See
 
 ## 7. Logs and history
 
+The TaskDev log editor renders common ANSI colors and styles using VS Code
+editor decorations. Unsupported cursor movement and other terminal-only
+controls are removed so output remains readable. The original files under
+`.taskdev/logs/` remain unchanged, including their ANSI bytes.
+
 - The sidebar's **log** button opens the *current* run in an editor tab.
 - Historical logs live in `.taskdev/logs/<task>.<UTC-timestamp>.log`.
   TaskDev keeps the last 20 per task and prunes older ones automatically.
@@ -311,7 +364,8 @@ you confirm.
 
 **The sidebar is empty.**
 Make sure `taskdev.json` exists at the workspace root (or any open folder
-in a multi-root workspace). Click **Refresh**.
+in a multi-root workspace), or that the workspace has `.vscode/tasks.json`
+with at least one task that has `label` and `command`. Click **Refresh**.
 
 **A task shows as stopped but the dev server is still running.**
 TaskDev only tracks processes it started itself. If something else started

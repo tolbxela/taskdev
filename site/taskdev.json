@@ -5,22 +5,19 @@
       "name": "dev",
       "type": "npm",
       "command": "npm run dev",
-      "detail": "Astro dev server with HMR",
-      "icon": "globe"
+      "detail": "Astro dev server with HMR"
     },
     {
       "name": "preview",
       "type": "npm",
       "command": "npm run preview",
-      "detail": "Serve the production build from dist/",
-      "icon": "eye"
+      "detail": "Serve the production build from dist/"
     },
     {
       "name": "build",
       "type": "npm",
       "command": "npm run build",
-      "detail": "One-shot static build → dist/",
-      "icon": "tools"
+      "detail": "One-shot static build → dist/"
     }
   ]
 }
