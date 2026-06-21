@@ -10,6 +10,26 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+{
+  const terminalText =
+    '\u001b[2m14:50:25\u001b[22m \u001b[34m[vite]\u001b[39m connected.\r' +
+    '\u001b]8;;https://example.com\u0007link\u001b]8;;\u0007\u0000';
+  const parsed = core.parseTerminalText(terminalText);
+  assert.equal(parsed.text, '14:50:25 [vite] connected.link');
+  assert.deepEqual(parsed.spans, [
+    { start: 0, end: 8, style: { dim: true } },
+    { start: 9, end: 15, style: { fg: 'ansiBlue' } },
+  ]);
+  assert.equal(core.stripTerminalSequences(terminalText), parsed.text);
+  const color = core.parseTerminalText('\u001b[38;5;196mred\u001b[0m \u001b[48;2;1;2;3mtrue\u001b[0m');
+  assert.equal(color.text, 'red true');
+  assert.deepEqual(color.spans, [
+    { start: 0, end: 3, style: { fg: '#ff0000' } },
+    { start: 4, end: 8, style: { bg: '#010203' } },
+  ]);
+  assert.equal(core.stripTerminalSequences('plain text'), 'plain text');
+}
+
 function withTempProject(fn) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'taskdev-test-'));
   const tasksFile = path.join(dir, 'taskdev.json');
@@ -50,7 +70,16 @@ withTempProject(({ dir }) => {
   assert.equal(created.tasksFile, tasksFile);
   assert.deepEqual(JSON.parse(fs.readFileSync(tasksFile, 'utf8')), {
     project: 'Nested Project',
-    tasks: [],
+    tasks: [
+      {
+        name: 'taskdev-home',
+        openBrowser: 'https://taskdev.dev',
+      },
+      {
+        name: 'taskdev-contact',
+        openBrowser: 'https://taskdev.dev/contact',
+      },
+    ],
   });
   assert.equal(fs.statSync(path.join(dir, 'nested', '.taskdev')).isDirectory(), true);
   assert.equal(fs.statSync(created.paths.logsDir).isDirectory(), true);
@@ -159,6 +188,131 @@ withTempProject(({ dir }) => {
   }
 }
 
+// .vscode/tasks.json: discovered and run directly without import.
+{
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'taskdev-vscode-'));
+  try {
+    fs.mkdirSync(path.join(root, '.vscode'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.vscode', 'tasks.json'), `{
+      // Standard VS Code task file with JSONC comments/trailing commas.
+      "version": "2.0.0",
+      "tasks": [
+        {
+          "label": "npm: dev server",
+          "type": "shell",
+          "command": "npm",
+          "args": ["run", "dev"],
+          "options": {
+            "cwd": "site",
+            "env": { "PORT": "4322" },
+          },
+          "group": "build",
+        },
+        {
+          "label": "dotnet build",
+          "type": "process",
+          "command": "dotnet",
+          "args": ["build"],
+        },
+      ],
+    }`);
+
+    const tasksFile = path.join(root, '.vscode', 'tasks.json');
+    const cfg = core.loadVscodeTasksConfig(tasksFile);
+    assert.equal(cfg._imported, 'vscode');
+    assert.deepEqual(cfg.tasks.map(t => t.name), ['npm-dev-server', 'dotnet-build']);
+    assert.equal(cfg.tasks[0].command, 'npm run dev');
+    assert.equal(cfg.tasks[0].cwd, path.join(root, 'site'));
+    assert.deepEqual(cfg.tasks[0].env, { PORT: '4322' });
+    assert.equal(cfg.tasks[0].category, 'build');
+
+    const projects = core.discoverProjects([root]);
+    assert.equal(projects.length, 1);
+    assert.equal(projects[0].imported, 'vscode');
+    assert.equal(projects[0].readOnly, true);
+    assert.equal(projects[0].tasksFile, tasksFile);
+    assert.equal(projects[0].paths.stateFile, path.join(root, '.taskdev', 'state.json'));
+
+    const listed = core.listTasks(projects[0].paths);
+    assert.deepEqual(listed.map(t => t.name), ['npm-dev-server', 'dotnet-build']);
+    assert.equal(listed[1].cwd, root);
+    assert.equal(listed[0].source, 'vscode');
+
+    assert.match(
+      core.addTask(tasksFile, { name: 'extra', command: 'dotnet build' }, { confirm: 'ADD extra' }).error,
+      /reads \.vscode\/tasks\.json directly/,
+    );
+
+    fs.writeFileSync(path.join(root, 'taskdev.json'), JSON.stringify({ project: 'Native', tasks: [] }));
+    const nativeOnly = core.discoverProjects([root]);
+    assert.equal(nativeOnly.length, 1);
+    assert.equal(nativeOnly[0].tasksFile, path.join(root, 'taskdev.json'));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+}
+
+withTempProject(({ tasksFile }) => {
+  fs.writeFileSync(tasksFile, JSON.stringify({
+    project: 'Test',
+    tasks: [
+      { name: 'site', openBrowser: 'https://taskdev.dev' },
+      { name: 'invalid', openBrowser: '/relative-only' },
+      { name: 'build', command: 'dotnet build' },
+    ],
+  }, null, 2));
+
+  const tasks = core.loadTasks(tasksFile);
+  assert.deepEqual(tasks.map(t => t.name), ['site', 'build']);
+  const browserOnly = tasks[0];
+  assert.match(core.startTask(browserOnly, core.pathsFor(tasksFile)).error, /TaskDev sidebar/);
+  const listed = core.listTasks(core.pathsFor(tasksFile));
+  assert.equal(listed[0].command, null);
+  assert.equal(listed[0].openBrowser, 'https://taskdev.dev');
+  assert.equal(listed[0].logPath, null);
+});
+
+withTempProject(({ tasksFile }) => {
+  fs.writeFileSync(tasksFile, JSON.stringify({
+    project: 'Test',
+    tasks: {
+      Examples: [
+        { name: 'home', openBrowser: 'https://taskdev.dev' },
+      ],
+      Build: [
+        { name: 'compile', command: 'dotnet build' },
+      ],
+    },
+  }, null, 2));
+
+  const tasks = core.loadTasks(tasksFile);
+  assert.deepEqual(tasks.map(t => t.name), ['home', 'compile']);
+  assert.equal(tasks[0].category, 'Examples');
+  assert.equal(tasks[1].category, 'Build');
+
+  const listed = core.listTasks(core.pathsFor(tasksFile));
+  assert.equal(listed[0].category, 'Examples');
+  assert.equal(listed[0].openBrowser, 'https://taskdev.dev');
+  assert.equal(listed[0].command, null);
+});
+
+withTempProject(({ tasksFile }) => {
+  fs.writeFileSync(tasksFile, JSON.stringify({
+    project: 'Test',
+    tasks: {
+      Build: [
+        { name: 'compile', command: 'dotnet build' },
+      ],
+    },
+  }, null, 2));
+  const before = fs.readFileSync(tasksFile, 'utf8');
+
+  const moved = core.moveTask(tasksFile, 'compile', 'up');
+  assert.equal(moved.ok, false);
+  assert.match(moved.error, /grouped task maps/);
+  assert.equal(fs.readFileSync(tasksFile, 'utf8'), before);
+});
+
 withTempProject(({ tasksFile }) => {
   assert.deepEqual(core.validateTaskCommand('dotnet build', tasksFile), {
     ok: true,
@@ -188,19 +342,107 @@ withTempProject(({ tasksFile }) => {
 withTempProject(({ tasksFile }) => {
   fs.writeFileSync(tasksFile, JSON.stringify({
     project: 'Test',
+    tasks: [
+      { name: 'api', command: 'dotnet run', category: 'Services' },
+      { name: 'lint', command: 'npm run lint' },
+      { name: 'worker', command: 'dotnet run', category: 'Services' },
+      { name: 'test', command: 'npm test' },
+    ],
+  }, null, 2));
+
+  const movedService = core.moveTask(tasksFile, 'worker', 'up');
+  assert.equal(movedService.ok, true);
+  assert.equal(movedService.moved, true);
+  assert.deepEqual(core.loadConfig(tasksFile).tasks.map(t => t.name), ['worker', 'lint', 'api', 'test']);
+
+  const movedUncategorized = core.moveTask(tasksFile, 'lint', 'down');
+  assert.equal(movedUncategorized.ok, true);
+  assert.equal(movedUncategorized.moved, true);
+  assert.deepEqual(core.loadConfig(tasksFile).tasks.map(t => t.name), ['worker', 'test', 'api', 'lint']);
+
+  const atBoundary = core.moveTask(tasksFile, 'worker', 'up');
+  assert.equal(atBoundary.ok, true);
+  assert.equal(atBoundary.moved, false);
+  assert.equal(core.moveTask(tasksFile, 'missing', 'up').error, 'unknown task');
+  assert.match(core.moveTask(tasksFile, 'api', 'sideways').error, /direction/);
+});
+
+withTempProject(({ tasksFile }) => {
+  fs.writeFileSync(tasksFile, JSON.stringify({
+    project: 'Test',
+    tasks: [
+      { name: 'api', command: 'dotnet run', category: 'Services' },
+      { name: 'lint', command: 'npm run lint' },
+      { name: 'worker', command: 'dotnet run', category: 'Services' },
+      { name: 'test', command: 'npm test' },
+      { name: 'web', command: 'npm run dev', category: 'Web' },
+    ],
+  }, null, 2));
+
+  const beforeWorker = core.moveTaskTo(tasksFile, 'lint', { beforeName: 'worker' });
+  assert.equal(beforeWorker.ok, true);
+  let tasks = core.loadConfig(tasksFile).tasks;
+  assert.deepEqual(tasks.map(t => t.name), ['api', 'lint', 'worker', 'test', 'web']);
+  assert.equal(tasks.find(t => t.name === 'lint').category, 'Services');
+
+  const intoWeb = core.moveTaskTo(tasksFile, 'api', { category: 'Web' });
+  assert.equal(intoWeb.ok, true);
+  tasks = core.loadConfig(tasksFile).tasks;
+  assert.deepEqual(tasks.map(t => t.name), ['lint', 'worker', 'test', 'web', 'api']);
+  assert.equal(tasks.find(t => t.name === 'api').category, 'Web');
+
+  const uncategorized = core.moveTaskTo(tasksFile, 'web', { category: null });
+  assert.equal(uncategorized.ok, true);
+  tasks = core.loadConfig(tasksFile).tasks;
+  assert.deepEqual(tasks.map(t => t.name), ['lint', 'worker', 'test', 'web', 'api']);
+  assert.equal(Object.hasOwn(tasks.find(t => t.name === 'web'), 'category'), false);
+
+  const sameTarget = core.moveTaskTo(tasksFile, 'worker', { beforeName: 'worker' });
+  assert.equal(sameTarget.ok, true);
+  assert.equal(sameTarget.moved, false);
+  assert.equal(core.moveTaskTo(tasksFile, 'worker', { beforeName: 'missing' }).error, 'unknown target task');
+});
+
+withTempProject(({ tasksFile }) => {
+  fs.writeFileSync(tasksFile, JSON.stringify({
+    project: 'Test',
+    tasks: [
+      { name: 'api', command: 'dotnet run' },
+      { name: 'web', command: 'npm run dev', category: 'Frontend' },
+    ],
+  }, null, 2));
+
+  const added = core.setTaskCategory(tasksFile, 'api', ' Services ');
+  assert.equal(added.ok, true);
+  assert.equal(core.loadConfig(tasksFile).tasks[0].category, 'Services');
+
+  const changed = core.setTaskCategory(tasksFile, 'api', 'Backend');
+  assert.equal(changed.ok, true);
+  assert.equal(core.loadConfig(tasksFile).tasks[0].category, 'Backend');
+
+  const removed = core.setTaskCategory(tasksFile, 'web', '');
+  assert.equal(removed.ok, true);
+  assert.equal(Object.hasOwn(core.loadConfig(tasksFile).tasks[1], 'category'), false);
+
+  assert.equal(core.setTaskCategory(tasksFile, 'missing', 'Backend').error, 'unknown task');
+  assert.match(core.setTaskCategory(tasksFile, 'api', 'x'.repeat(65)).error, /64 characters/);
+});
+
+withTempProject(({ tasksFile }) => {
+  fs.writeFileSync(tasksFile, JSON.stringify({
+    project: 'Test',
     tasks: [{
       name: 'build',
       type: 'npm',
       command: 'npm run build',
       detail: 'Creates production build',
-      icon: { id: 'package', color: 'terminal.ansiGreen' },
     }],
   }, null, 2));
 
   const [task] = core.listTasks(core.pathsFor(tasksFile));
   assert.equal(task.type, 'npm');
   assert.equal(task.detail, 'Creates production build');
-  assert.deepEqual(task.icon, { id: 'package', color: 'terminal.ansiGreen' });
+  assert.equal(Object.hasOwn(task, 'icon'), false);
 });
 
 withTempProject(({ tasksFile }) => {

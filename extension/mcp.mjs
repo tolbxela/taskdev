@@ -52,7 +52,7 @@ function currentProjects() {
 }
 
 function selectProject(projects, requested) {
-  if (!projects.length) return { ok: false, error: 'no taskdev.json found in any configured workspace folder' };
+  if (!projects.length) return { ok: false, error: 'no taskdev.json or .vscode/tasks.json found in any configured workspace folder' };
   if (requested) {
     const match = projects.find(p => p.name === requested);
     if (!match) {
@@ -95,6 +95,8 @@ server.tool(
       name: p.name,
       tasksFile: p.tasksFile,
       root: p.root,
+      source: p.imported === 'vscode' ? 'vscode-tasks' : 'taskdev',
+      readOnly: !!p.readOnly,
     })));
   },
 );
