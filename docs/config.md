@@ -1,8 +1,8 @@
 # TaskDev — Configuration Reference
 
-The precise reference for `taskdev.json`, runtime files, editor settings,
-and the MCP tools surface. For the trust model and the agent-add allow-list,
-see [`security.md`](security.md). For practical setups, see
+The precise reference for `taskdev.json`, direct `.vscode/tasks.json` support,
+runtime files, editor settings, and the MCP tools surface. For the trust model
+and the agent-add allow-list, see [`security.md`](security.md). For practical setups, see
 [`usage.md`](usage.md).
 
 All behavior below is implemented in `extension/core.cjs` and
@@ -32,18 +32,42 @@ Source: `TASK_NAME_RE` in `extension/core.cjs`.
   "tasks": [
     {
       "name":    "api",               // required, see § 1
-      "command": "dotnet run --project src/Api", // required
+      "command": "dotnet run --project src/Api", // required unless openBrowser is a full URL
       "cwd":     "src/Api",           // optional, relative or absolute
       "env":     { "PORT": "5000" },  // optional, see security.md § 4
       "type":    "dotnet",            // optional, free-form metadata
       "detail":  "Starts the API",    // optional, shown in UI
-      "icon":    "server-process",    // optional, see § 2.1
       "category": "Backend",          // optional, see § 2.3
       "openBrowser": true             // optional, see § 2.2
     }
   ]
 }
 ```
+
+The standard `tasks` array is the editable format used by sidebar reorder,
+category editing, `taskdev_add`, and `taskdev_remove`.
+
+For a DRY category-first file, `tasks` may also be an object whose keys are
+category names:
+
+```jsonc
+{
+  "project": "My App",
+  "tasks": {
+    "Backend": [
+      { "name": "api", "command": "dotnet run --project src/Api" },
+      { "name": "worker", "command": "npm run worker", "cwd": "services/worker" }
+    ],
+    "Frontend": [
+      { "name": "web", "command": "npm run dev", "cwd": "apps/web", "openBrowser": true }
+    ]
+  }
+}
+```
+
+Grouped task maps are read-only for task editing commands: start, stop, restart,
+list, status, and logs work, but drag reorder, category edits, `taskdev_add`,
+and `taskdev_remove` require the array form.
 
 TaskDev searches each workspace folder **recursively** for `taskdev.json`
 (falling back to `.taskdev.json`), so monorepos can have a config per app:
@@ -77,28 +101,32 @@ A few rules keep this fast and predictable:
   events (a `taskdev.json` is created / changed / deleted), on the
   **Refresh** button, and on workspace folder add/remove.
 
-### 2.1 `icon` shapes
+### 2.1 `.vscode/tasks.json`
 
-`icon` accepts either:
+When a workspace folder has `.vscode/tasks.json` and no root `taskdev.json` or
+`.taskdev.json`, TaskDev exposes the VS Code tasks directly as a read-only
+project. No import step is required.
 
-- a string — a [VS Code codicon](https://microsoft.github.io/vscode-codicons/dist/codicon.html)
-  id, e.g. `"server-process"`.
-- an object — `{ "id": "globe", "color": "terminal.ansiBlue" }`. The `color`
-  must be a valid theme color id.
+TaskDev maps:
 
-When `icon` is omitted, TaskDev infers one from the task name/command (see
-`inferTaskIcon` in `extension/extension.js`):
-
-| If name/command/type contains | Inferred icon |
+| VS Code field | TaskDev field |
 | --- | --- |
-| `test`, `spec`, `check`, `verify` | `beaker` |
-| `build`, `bundle`, `pack`, `publish`, `compile` | `package` |
-| `dev`, `serve`, `server`, `start`, `watch` | `globe` |
-| `api`, `worker`, `service` | `server-process` |
-| (anything else) | `terminal` |
+| `label` / `taskName` | `name` and `detail` |
+| `command` + `args` | `command` |
+| `options.cwd` | `cwd` |
+| `options.env` | `env` |
+| `group` / `group.kind` | `category` |
 
-You can override the fallback with the `taskdev.defaultTaskIcon` setting
-(see § 4).
+VS Code labels can contain spaces and punctuation, so TaskDev normalizes them
+to MCP/log-safe names by replacing unsupported characters with `-` and
+deduplicating with numeric suffixes. Example: `"npm: dev server"` becomes
+`npm-dev-server`.
+
+Read-only means TaskDev can start, stop, restart, list, and log those tasks,
+but cannot reorder them, edit categories, or service `taskdev_add` /
+`taskdev_remove` against `.vscode/tasks.json`. Create or import a
+`taskdev.json` when you need TaskDev-specific metadata such as `openBrowser`,
+browser-only tasks, or editable categories.
 
 ### 2.2 `openBrowser`
 
@@ -112,8 +140,20 @@ sidebar's play button. Accepted values:
 | `"http://localhost:8080"` | Opens the URL as-is. |
 | `false` / omitted | No browser opens. |
 
-The browser is opened ~1.5 s after the task starts so the dev server has a
-chance to begin listening. Starting a task via MCP (`taskdev_control`,
+A full `http://` or `https://` URL may be used without `command` to create a
+simple browser action:
+
+```json
+{
+  "name": "taskdev-contact",
+  "openBrowser": "https://taskdev.dev/contact",
+  "category": "Examples"
+}
+```
+
+Browser-only tasks open immediately and do not create a process or log file.
+Command-backed tasks wait ~1.5 s before opening so the dev server has a chance
+to begin listening. Starting a task via MCP (`taskdev_control`,
 `taskdev_restart`) does **not** open the browser — only the sidebar play
 button does.
 
@@ -164,7 +204,9 @@ MyApp
 
 ## 3. Runtime files
 
-TaskDev creates these next to your `taskdev.json`:
+TaskDev creates these next to your `taskdev.json`. For direct
+`.vscode/tasks.json` projects, the same `.taskdev/` folder is created at the
+workspace root, next to `.vscode/`.
 
 ```text
 .taskdev/
@@ -189,13 +231,14 @@ TaskDev creates these next to your `taskdev.json`:
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `taskdev.defaultTaskIcon` | `auto` | Fallback codicon id when a task has no `icon`. `auto` keeps the inferred icons from § 2.1; any other value (e.g. `file-code`) becomes a hard fallback. |
+| `taskdev.logViewer.maxLines` | `5000` | Maximum number of log lines kept in the TaskDev log viewer buffer. |
+| `taskdev.logViewer.refreshIntervalMs` | `500` | Log viewer refresh interval while tailing, in milliseconds. |
 
 The TaskDev sidebar refreshes:
 
 - every 10 s while at least one task is running,
 - every 60 s otherwise,
-- on edits to `taskdev.json` / `.taskdev.json` (file watcher),
+- on edits to `taskdev.json` / `.taskdev.json` / `.vscode/tasks.json` (file watcher),
 - on workspace folder add/remove,
 - on demand via the **Refresh** button.
 
@@ -216,7 +259,8 @@ The TaskDev sidebar refreshes:
 | `taskdev_remove`       | `name`, `confirm: "REMOVE <name>"`, `project?` | Remove a stopped task. |
 
 The `project` argument is the value of the `project` field in the target
-`taskdev.json` (or its containing folder name when that field is absent).
+`taskdev.json` (or its containing folder name when that field is absent). For
+direct `.vscode/tasks.json` projects, it is the workspace folder name.
 
 - **Single project workspace:** omit `project`; it's inferred.
 - **Multi-project workspace:** omit `project` and tools return an error

@@ -85,19 +85,14 @@ Example for an *ASP.NET Core* + *Vue.js* project:
     {
       "name": "api",
       "command": "dotnet run --project src/Api",
-      "detail": "Starts the backend API",
-      "icon": "server-process"
+      "detail": "Starts the backend API"
     },
     {
       "name": "ui",
       "type": "npm",
       "command": "npm run dev",
       "cwd": "ui",
-      "detail": "Starts the Vite dev server",
-      "icon": {
-        "id": "globe",
-        "color": "terminal.ansiBlue"
-      }
+      "detail": "Starts the Vite dev server"
     }
   ]
 }
@@ -108,7 +103,6 @@ Each task needs a `name` and a `command`. Everything else is optional:
 - `cwd` - working directory for the command
 - `env` - extra environment variables
 - `detail` - short description shown in the sidebar
-- `icon` - a codicon id, or `{ id, color }`
 - `type` - a free-form label like `npm` or `dotnet`
 
 Add as many tasks as you want. Two shapes fit naturally:
@@ -128,7 +122,7 @@ Click the **TaskDev** icon in the Activity Bar. You get a tree grouped by projec
 
 Each task row shows:
 
-- an icon (auto-picked from the name, or whatever you set in `icon`) that turns **green while the task is running**
+- an inferred icon that turns **green while the task is running**
 - the task name, plus either the first line of `detail` or `running · 12m` once started
 - a rich tooltip on hover with status, command, `cwd`, PID, uptime, and log path
 
