@@ -6,75 +6,308 @@ const core = require('./core.cjs');
 let output = null;
 function log(msg) { if (output) output.appendLine(`[${new Date().toISOString()}] ${msg}`); }
 
-// Per-task output channels for log tailing. Key: "<tasksFile>:<taskName>"
-const _logChannels = new Map();
+// ---------------------------------------------------------------------------
+// Log viewer
+//
+// Logs open in a read-only virtual document (scheme "taskdev-log") instead of
+// an OutputChannel. This gives native find (Ctrl+F), native selection/copy,
+// full control over ordering, and a cheap "freeze" (pause refresh) toggle —
+// without the cost/complexity of a webview.
+//
+// The line buffer is always chronological, with newest entries at the bottom.
+// ANSI SGR colors/styles are rendered with editor decorations; unsupported
+// terminal control sequences are removed from the displayed text.
+// ---------------------------------------------------------------------------
+const LOG_SCHEME = 'taskdev-log';
+const LOG_VIEW_MAX_LINES_DEFAULT = 5000;
+// Trailing-edge throttle: bursty output coalesces into at most one refresh per
+// this window. Kept deliberately relaxed so a chatty task can't pin the UI
+// thread re-serializing the buffer. User-tunable via logViewer.refreshIntervalMs.
+const LOG_REFRESH_THROTTLE_MS = 500;
+const TASK_DRAG_MIME = 'application/vnd.code.tree.taskdev.tasks';
+
+// Per-task viewer state. Key: "<tasksFile>:<taskName>".
+const _logDocs = new Map();
+const _ansiDecorationTypes = new Map();
+let _logEmitter = null; // vscode.EventEmitter<Uri> driving content refresh
+
+function logCfg() {
+  const cfg = vscode.workspace.getConfiguration('taskdev');
+  let maxLines = Number(cfg.get('logViewer.maxLines'));
+  if (!Number.isFinite(maxLines)) maxLines = LOG_VIEW_MAX_LINES_DEFAULT;
+  maxLines = Math.max(100, Math.min(100000, Math.floor(maxLines)));
+  let refreshMs = Number(cfg.get('logViewer.refreshIntervalMs'));
+  if (!Number.isFinite(refreshMs)) refreshMs = LOG_REFRESH_THROTTLE_MS;
+  refreshMs = Math.max(100, Math.min(5000, Math.floor(refreshMs)));
+  return { maxLines, refreshMs };
+}
+
+function logKeyFor(tasksFile, name) { return `${tasksFile}:${name}`; }
+
+function logUriFor(tasksFile, name) {
+  // Path drives the editor tab title; query keeps the doc unique per task and
+  // lets us rebuild state after a window reload.
+  return vscode.Uri.from({
+    scheme: LOG_SCHEME,
+    path: `/${name}.log`,
+    query: Buffer.from(tasksFile, 'utf8').toString('base64'),
+  });
+}
+
+// Decode the "<tasksFile>:<name>" map key back out of a log URI.
+function logKeyFromUri(uri) {
+  let tasksFile = '';
+  try { tasksFile = Buffer.from(uri.query, 'base64').toString('utf8'); } catch { /* ignore */ }
+  return logKeyFor(tasksFile, path.basename(uri.path).replace(/\.log$/, ''));
+}
+
+// "Follow" / tail: scroll any visible editor for this doc to the newest line.
+function revealNewest(doc) {
+  const editors = vscode.window.visibleTextEditors.filter(
+    e => e.document.uri.toString() === doc.uri.toString(),
+  );
+  if (!editors.length) return;
+  const line = doc.lineCount - 1;
+  const range = new vscode.Range(Math.max(0, line), 0, Math.max(0, line), 0);
+  for (const e of editors) e.revealRange(range, vscode.TextEditorRevealType.Default);
+}
+
+// Append decoded bytes to the buffer, keeping the last complete line in
+// `remainder` so we never render half a record. Caps the buffer to maxLines.
+function pushLogText(state, text, maxLines) {
+  const parts = (state.remainder + text).split('\n');
+  state.remainder = parts.pop();
+  if (parts.length) {
+    state.lines.push(...parts);
+    if (state.lines.length > maxLines) {
+      state.lines.splice(0, state.lines.length - maxLines);
+      state.truncated = true;
+    }
+  }
+}
+
+function renderLog(state) {
+  let lines = state.remainder ? state.lines.concat(state.remainder) : state.lines;
+  if (state.filter) {
+    const needle = state.filter.toLowerCase();
+    lines = lines.filter(l => core.stripTerminalSequences(l).toLowerCase().includes(needle));
+  }
+  const parsed = core.parseTerminalText(lines.join('\n'));
+  const flags = [];
+  if (state.truncated) flags.push('truncated');
+  flags.push(state.tailing ? 'tail on' : 'tail off');
+  if (state.filter) flags.push(`filter: "${state.filter}" (${lines.length} match${lines.length === 1 ? '' : 'es'})`);
+  const header = `--- taskdev: ${state.name} (${flags.join(', ')}) ---\n`;
+  state.ansiSpans = parsed.spans.map(span => ({
+    ...span,
+    start: span.start + header.length,
+    end: span.end + header.length,
+  }));
+  return `${header}${parsed.text}\n`;
+}
+
+function ansiColor(value) {
+  return typeof value === 'string' && value.startsWith('ansi')
+    ? new vscode.ThemeColor(`terminal.${value}`)
+    : value;
+}
+
+function ansiDecorationType(style) {
+  const key = JSON.stringify(style);
+  let type = _ansiDecorationTypes.get(key);
+  if (type) return type;
+  const lines = [];
+  if (style.underline) lines.push('underline');
+  if (style.strikethrough) lines.push('line-through');
+  type = vscode.window.createTextEditorDecorationType({
+    color: ansiColor(style.fg),
+    backgroundColor: ansiColor(style.bg),
+    fontWeight: style.bold ? 'bold' : undefined,
+    fontStyle: style.italic ? 'italic' : undefined,
+    opacity: style.dim ? '0.65' : undefined,
+    textDecoration: lines.length ? lines.join(' ') : undefined,
+  });
+  _ansiDecorationTypes.set(key, type);
+  return type;
+}
+
+function applyAnsiDecorations(doc) {
+  if (!doc || doc.uri.scheme !== LOG_SCHEME) return;
+  const state = _logDocs.get(logKeyFromUri(doc.uri));
+  const editors = vscode.window.visibleTextEditors.filter(
+    editor => editor.document.uri.toString() === doc.uri.toString(),
+  );
+  if (!editors.length) return;
+  const grouped = new Map();
+  for (const span of state?.ansiSpans || []) {
+    const type = ansiDecorationType(span.style);
+    if (!grouped.has(type)) grouped.set(type, []);
+    grouped.get(type).push(new vscode.Range(doc.positionAt(span.start), doc.positionAt(span.end)));
+  }
+  for (const editor of editors) {
+    for (const type of _ansiDecorationTypes.values()) {
+      editor.setDecorations(type, grouped.get(type) || []);
+    }
+  }
+}
+
+// Seed the buffer from the tail of the current log file and position the read
+// cursor at end of file so the watcher only ingests new bytes.
+function seedLog(state, maxLines) {
+  const tail = core.tailLog(state.paths, state.name, maxLines, undefined, core.TAIL_READ_MAX_BYTES);
+  if (tail.ok) {
+    state.truncated = !!tail.truncated;
+    pushLogText(state, tail.text, maxLines);
+  }
+  try { state.readOffset = fs.statSync(state.logPath).size; } catch { state.readOffset = 0; }
+}
+
+function appendLogFrom(state, maxLines) {
+  let stat;
+  try { stat = fs.statSync(state.logPath); } catch { return; }
+  if (stat.size < state.readOffset) {
+    // File truncated or rotated under us: reset the buffer.
+    state.readOffset = 0; state.lines = []; state.remainder = ''; state.truncated = false;
+  }
+  if (stat.size <= state.readOffset) return;
+  const len = stat.size - state.readOffset;
+  const buf = Buffer.alloc(len);
+  const fd = fs.openSync(state.logPath, 'r');
+  try { fs.readSync(fd, buf, 0, len, state.readOffset); } finally { fs.closeSync(fd); }
+  state.readOffset = stat.size;
+  pushLogText(state, buf.toString('utf8'), maxLines);
+}
+
+// Coalesce bursty fs.watch events into one refresh per throttle window.
+function scheduleLogRefresh(state) {
+  if (state.throttle) return;
+  const { maxLines, refreshMs } = logCfg();
+  state.throttle = setTimeout(() => {
+    state.throttle = null;
+    appendLogFrom(state, maxLines);
+    if (!state.tailing) { state.pendingChange = true; return; }
+    if (_logEmitter) _logEmitter.fire(state.uri);
+  }, refreshMs);
+}
+
+function startLogWatcher(state, running) {
+  if (!running || state.watcher) return;
+  try {
+    state.watcher = fs.watch(state.logPath, () => {
+      scheduleLogRefresh(state);
+      // Stop following once the task is no longer running.
+      const tasks = core.listTasks(state.paths, { reconcile: false });
+      const t = tasks.find(x => x.name === state.name);
+      if (!t || t.status !== 'running') stopLogWatcher(state);
+    });
+    state.watcher.on('error', () => stopLogWatcher(state));
+  } catch { /* file watching unavailable; static tail is fine */ }
+}
+
+function stopLogWatcher(state) {
+  if (state.watcher) { try { state.watcher.close(); } catch {} state.watcher = null; }
+}
+
+function disposeLogState(state) {
+  stopLogWatcher(state);
+  if (state.throttle) { clearTimeout(state.throttle); state.throttle = null; }
+  _logDocs.delete(logKeyFor(state.tasksFile, state.name));
+}
+
+// Look up existing viewer state, or rebuild it from the URI (used by the
+// content provider after a window reload, when the in-memory map is empty).
+function ensureLogState(uri, running) {
+  let tasksFile;
+  try { tasksFile = Buffer.from(uri.query, 'base64').toString('utf8'); } catch { return null; }
+  const name = path.basename(uri.path).replace(/\.log$/, '');
+  if (!tasksFile || !core.TASK_NAME_RE.test(name)) return null;
+  const key = logKeyFor(tasksFile, name);
+  let state = _logDocs.get(key);
+  if (state) return state;
+  const paths = core.pathsFor(tasksFile);
+  const logPath = core.currentLogPath(paths, name);
+  if (!logPath || !fs.existsSync(logPath)) return null;
+  state = {
+    uri, tasksFile, name, paths, logPath,
+    lines: [], remainder: '', readOffset: 0,
+    truncated: false, tailing: true, pendingChange: false, filter: null,
+    watcher: null, throttle: null, ansiSpans: [],
+  };
+  _logDocs.set(key, state);
+  seedLog(state, logCfg().maxLines);
+  if (running === undefined) {
+    const tasks = core.listTasks(paths, { reconcile: false });
+    running = tasks.find(x => x.name === name)?.status === 'running';
+  }
+  startLogWatcher(state, running);
+  return state;
+}
+
+class LogContentProvider {
+  get onDidChange() { return _logEmitter.event; }
+  provideTextDocumentContent(uri) {
+    const state = ensureLogState(uri);
+    return state ? renderLog(state) : `--- taskdev: no log available ---\n`;
+  }
+}
+
+async function openLogDocument(uri) {
+  const doc = await vscode.workspace.openTextDocument(uri);
+  try { await vscode.languages.setTextDocumentLanguage(doc, 'log'); } catch { /* 'log' lang optional */ }
+  await vscode.window.showTextDocument(doc, { preview: true, preserveFocus: false });
+  applyAnsiDecorations(doc);
+  return doc;
+}
 
 function showLog(elem) {
   if (!elem || elem.kind !== 'task' || !core.TASK_NAME_RE.test(elem.name)) return;
-  const key = `${elem._project.paths.tasksFile}:${elem.name}`;
+  const paths = elem._project.paths;
+  const uri = logUriFor(paths.tasksFile, elem.name);
+  const key = logKeyFor(paths.tasksFile, elem.name);
 
-  // Reuse an existing channel for this task if it's still open.
-  if (_logChannels.has(key)) {
-    _logChannels.get(key).channel.show(true);
-    return;
-  }
-
-  const logPath = core.currentLogPath(elem._project.paths, elem.name);
+  const logPath = core.currentLogPath(paths, elem.name);
   if (!logPath || !fs.existsSync(logPath)) {
     vscode.window.showInformationMessage(`taskdev: no log yet for "${elem.name}"`);
     return;
   }
-
-  const channel = vscode.window.createOutputChannel(`taskdev: ${elem.name}`);
-  let watcher = null;
-  let readOffset = 0;
-
-  function appendFrom(offset) {
-    let stat;
-    try { stat = fs.statSync(logPath); } catch { return offset; }
-    if (stat.size <= offset) return offset;
-    const len = stat.size - offset;
-    const buf = Buffer.alloc(len);
-    const fd = fs.openSync(logPath, 'r');
-    try { fs.readSync(fd, buf, 0, len, offset); } finally { fs.closeSync(fd); }
-    channel.append(buf.toString('utf8'));
-    return offset + len;
-  }
-
-  // Seed with tail (last 200 lines / 64 KB).
-  const tail = core.tailLog(elem._project.paths, elem.name, 200);
-  if (tail.ok) {
-    if (tail.truncated) channel.appendLine(`--- log truncated, showing tail (${tail.logSize} bytes total) ---`);
-    channel.append(tail.text);
-    // Position read cursor at end of file so the watcher only appends new bytes.
-    try { readOffset = fs.statSync(logPath).size; } catch { readOffset = 0; }
-  }
-
-  channel.show(true);
-
-  function stopWatcher() {
-    if (watcher) { try { watcher.close(); } catch {} watcher = null; }
-    _logChannels.delete(key);
-  }
-
-  // Follow the file while the task is running.
-  if (elem.status === 'running') {
-    try {
-      watcher = fs.watch(logPath, () => {
-        readOffset = appendFrom(readOffset);
-        // Stop following once the task is no longer running.
-        const tasks = core.listTasks(elem._project.paths, { reconcile: false });
-        const t = tasks.find(x => x.name === elem.name);
-        if (!t || t.status !== 'running') stopWatcher();
-      });
-      watcher.on('error', stopWatcher);
-    } catch { /* file watching not available, static tail is fine */ }
-  }
-
-  // Clean up when the user closes the panel.
-  channel.onDidDispose ? channel.onDidDispose(stopWatcher) : null;
-  _logChannels.set(key, { channel, stopWatcher });
+  // If the task was restarted, currentLogPath now points to a new file; drop
+  // the stale viewer state so we re-seed and follow the latest run.
+  const existing = _logDocs.get(key);
+  if (existing && existing.logPath !== logPath) disposeLogState(existing);
+  ensureLogState(uri, elem.status === 'running');
+  if (_logEmitter) _logEmitter.fire(uri); // force refresh if the doc was already open
+  openLogDocument(uri).then(doc => { revealNewest(doc); }, () => {});
 }
+
+function activeLogState() {
+  const ed = vscode.window.activeTextEditor;
+  if (!ed || ed.document.uri.scheme !== LOG_SCHEME) return null;
+  return ensureLogState(ed.document.uri);
+}
+
+function toggleLogTail() {
+  const state = activeLogState();
+  if (!state) return;
+  state.tailing = !state.tailing;
+  state.pendingChange = false;
+  // Turning tail back on flushes buffered lines; the change hook then scrolls
+  // to the newest line. Turning it off just refreshes the header.
+  if (_logEmitter) _logEmitter.fire(state.uri);
+}
+
+async function setLogFilter() {
+  const state = activeLogState();
+  if (!state) return;
+  const value = await vscode.window.showInputBox({
+    prompt: 'Filter log lines (case-insensitive substring). Leave empty to clear.',
+    value: state.filter || '',
+    placeHolder: 'e.g. error',
+  });
+  if (value === undefined) return; // user cancelled
+  state.filter = value.trim() || null;
+  if (_logEmitter) _logEmitter.fire(state.uri);
+}
+
 
 function atomicWriteFile(filePath, data) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -268,6 +501,7 @@ function formatUptime(ms) {
 
 function inferTaskIcon(task) {
   const text = `${task.name || ''} ${task.type || ''} ${task.command || ''}`.toLowerCase();
+  if (!task.command && resolveOpenBrowserUrl(task)) return 'link-external';
   if (/\b(test|spec|check|verify)\b/.test(text)) return 'beaker';
   if (/\b(build|bundle|pack|publish|compile)\b/.test(text)) return 'package';
   if (/\b(dev|serve|server|start|watch)\b/.test(text)) return 'globe';
@@ -275,16 +509,7 @@ function inferTaskIcon(task) {
   return 'terminal';
 }
 
-function defaultTaskIcon(task) {
-  const configured = vscode.workspace.getConfiguration('taskdev').get('defaultTaskIcon', 'auto');
-  const icon = typeof configured === 'string' ? configured.trim() : '';
-  if (!icon || icon === 'auto') return inferTaskIcon(task);
-  return icon;
-}
-
 function taskThemeIcon(task) {
-  // Exit states override the configured per-task icon: the warning is
-  // load-bearing and shouldn't be hidden by a custom "flame" icon.
   if (task.status === 'exited') {
     const code = task.lastExit?.code;
     if (code === 0) {
@@ -295,18 +520,8 @@ function taskThemeIcon(task) {
   if (task.status === 'exited-unknown') {
     return new vscode.ThemeIcon('warning', new vscode.ThemeColor('charts.yellow'));
   }
-  const configured = task.icon;
-  const fallbackIcon = defaultTaskIcon(task);
-  const id = typeof configured === 'string'
-    ? configured
-    : typeof configured?.id === 'string'
-      ? configured.id
-      : fallbackIcon;
-  const color = typeof configured?.color === 'string'
-    ? configured.color
-    : task.status === 'running'
-      ? 'charts.green'
-      : null;
+  const id = inferTaskIcon(task);
+  const color = task.status === 'running' ? 'charts.green' : null;
   return color
     ? new vscode.ThemeIcon(id, new vscode.ThemeColor(color))
     : new vscode.ThemeIcon(id);
@@ -328,7 +543,9 @@ function taskTooltip(task) {
   const lines = [];
   lines.push(task.name);
   if (task.detail) lines.push('', task.detail);
-  lines.push('', `status: ${task.status}`, `command: ${task.command}`, `cwd: ${task.cwd}`);
+  lines.push('', `status: ${task.status}`);
+  if (task.command) lines.push(`command: ${task.command}`, `cwd: ${task.cwd}`);
+  if (!task.command && task.openBrowser) lines.push(`opens: ${task.openBrowser}`);
   if (task.type) lines.push(`type: ${task.type}`);
   if (task.pid) lines.push(`pid: ${task.pid}`);
   if (task.uptimeMs) lines.push(`uptime: ${formatUptime(task.uptimeMs)}`);
@@ -438,18 +655,59 @@ class TreeProvider {
     const t = elem;
     const item = new vscode.TreeItem(t.name, vscode.TreeItemCollapsibleState.None);
     item.id = `task:${t._project.paths.tasksFile}:${t.name}`;
-    if (t.status === 'running') {
-      item.description = `running${t.uptimeMs ? ` · ${formatUptime(t.uptimeMs)}` : ''}`;
-    } else if (t.status === 'exited' || t.status === 'exited-unknown') {
-      const reason = t.status === 'exited-unknown' ? 'exited (no signal)' : formatExitReason(t.lastExit);
-      item.description = reason;
-    } else {
-      item.description = '';
-    }
     item.tooltip = taskTooltip(t);
     item.contextValue = t.status;
     item.iconPath = taskThemeIcon(t);
     return item;
+  }
+}
+
+class TaskDragAndDropController {
+  constructor(provider) {
+    this.provider = provider;
+    this.dragMimeTypes = [TASK_DRAG_MIME];
+    this.dropMimeTypes = [TASK_DRAG_MIME];
+  }
+
+  handleDrag(source, dataTransfer) {
+    const tasks = source
+      .filter(item => item?.kind === 'task')
+      .map(item => ({
+        tasksFile: item._project.paths.tasksFile,
+        name: item.name,
+      }));
+    if (tasks.length) dataTransfer.set(TASK_DRAG_MIME, new vscode.DataTransferItem(tasks));
+  }
+
+  async handleDrop(target, dataTransfer) {
+    const transferItem = dataTransfer.get(TASK_DRAG_MIME);
+    if (!transferItem || !target) return;
+    let dragged = transferItem.value;
+    if (!Array.isArray(dragged)) {
+      try { dragged = JSON.parse(await transferItem.asString()); }
+      catch { return; }
+    }
+    if (!Array.isArray(dragged) || dragged.length === 0) return;
+
+    const targetProject = target.kind === 'project' ? target : target._project;
+    const tasksFile = targetProject?.paths?.tasksFile;
+    if (!tasksFile) return;
+
+    for (const source of dragged) {
+      if (source?.tasksFile !== tasksFile || !core.TASK_NAME_RE.test(source?.name || '')) {
+        vscode.window.showWarningMessage('taskdev: tasks can only be dragged within the same project');
+        continue;
+      }
+      let destination;
+      if (target.kind === 'task') destination = { beforeName: target.name };
+      else if (target.kind === 'category') destination = { category: target.name };
+      else if (target.kind === 'project') destination = { category: null };
+      else continue;
+
+      const result = core.moveTaskTo(tasksFile, source.name, destination);
+      if (!result.ok) vscode.window.showWarningMessage(`taskdev: ${result.error}`);
+    }
+    this.provider.refresh(false);
   }
 }
 
@@ -472,10 +730,10 @@ function buildProjectChildren(project, tasks) {
 }
 
 function foldersWithoutConfig() {
-  // A workspace folder is "without config" if no taskdev.json exists anywhere
-  // in its subtree (subject to the same exclude list the discoverer uses).
-  // This is what makes the "Create taskdev.json in folder…" picker meaningful
-  // in a monorepo where some folders are covered by nested configs.
+  // A workspace folder is "without config" if no editable TaskDev config
+  // exists anywhere in its subtree. A read-only .vscode/tasks.json project can
+  // still be shown directly, but this picker should continue to offer creating
+  // a taskdev.json for users who want TaskDev-specific metadata.
   const folders = vscode.workspace.workspaceFolders || [];
   return folders.filter(f => core.scanForTasksFiles(f.uri.fsPath, { maxResults: 1 }).length === 0);
 }
@@ -607,12 +865,63 @@ function maybeOpenBrowser(task) {
   }, 1500);
 }
 
+async function addCategoryToTask(elem) {
+  if (!elem || elem.kind !== 'task') return;
+  const task = core.loadTasks(elem._project.paths.tasksFile).find(item => item.name === elem.name);
+  if (!task) return;
+  const category = await vscode.window.showInputBox({
+    title: 'Add category',
+    prompt: 'Enter a category name. Leave empty to remove the current category.',
+    value: typeof task.category === 'string' ? task.category : '',
+    placeHolder: 'e.g. Extension',
+    validateInput(value) {
+      const normalized = value.trim();
+      if (normalized.length > 64) return 'Category names can contain at most 64 characters.';
+      if (/[\r\n]/.test(normalized)) return 'Category names must use a single line.';
+      return null;
+    },
+  });
+  if (category === undefined) return;
+  const result = core.setTaskCategory(elem._project.paths.tasksFile, elem.name, category);
+  if (!result.ok) vscode.window.showWarningMessage(`taskdev: ${result.error}`);
+  provider.refresh(false);
+}
+
 
 function activate(ctx) {
   output = vscode.window.createOutputChannel('taskdev');
   ctx.subscriptions.push(output);
   provider = new TreeProvider();
-  ctx.subscriptions.push(provider, vscode.window.registerTreeDataProvider('taskdev.tasks', provider));
+  const treeView = vscode.window.createTreeView('taskdev.tasks', {
+    treeDataProvider: provider,
+    dragAndDropController: new TaskDragAndDropController(provider),
+  });
+  ctx.subscriptions.push(provider, treeView);
+
+  // Log viewer: virtual-document provider + refresh emitter.
+  _logEmitter = new vscode.EventEmitter();
+  ctx.subscriptions.push(
+    _logEmitter,
+    vscode.workspace.registerTextDocumentContentProvider(LOG_SCHEME, new LogContentProvider()),
+    vscode.window.onDidChangeActiveTextEditor(editor => {
+      if (editor?.document.uri.scheme === LOG_SCHEME) applyAnsiDecorations(editor.document);
+    }),
+    vscode.workspace.onDidCloseTextDocument(doc => {
+      if (doc.uri.scheme !== LOG_SCHEME) return;
+      const state = _logDocs.get(logKeyFromUri(doc.uri));
+      if (state) disposeLogState(state);
+    }),
+    // Auto-follow: when the virtual doc's text actually updates, scroll any
+    // visible editor to the newest line — unless tail is off.
+    vscode.workspace.onDidChangeTextDocument(ev => {
+      if (ev.document.uri.scheme !== LOG_SCHEME) return;
+      const state = _logDocs.get(logKeyFromUri(ev.document.uri));
+      setTimeout(() => {
+        applyAnsiDecorations(ev.document);
+        if (state && state.tailing) revealNewest(ev.document);
+      }, 0);
+    }),
+  );
 
   ctx.subscriptions.push(
     vscode.commands.registerCommand('taskdev.refresh', () => provider.refresh()),
@@ -620,6 +929,12 @@ function activate(ctx) {
       if (!elem || elem.kind !== 'task') return;
       const task = core.loadTasks(elem._project.paths.tasksFile).find(x => x.name === elem.name);
       if (!task) return;
+      if (!task.command) {
+        const url = resolveOpenBrowserUrl(task);
+        if (!url) vscode.window.showWarningMessage(`taskdev: invalid browser URL for "${task.name}"`);
+        else vscode.env.openExternal(vscode.Uri.parse(url));
+        return;
+      }
       const r = core.startTask(task, elem._project.paths);
       if (!r.ok) vscode.window.showWarningMessage(`taskdev: ${r.error}`);
       if (r.ok && !r.alreadyRunning) maybeOpenBrowser(task);
@@ -631,7 +946,22 @@ function activate(ctx) {
       if (!r.ok) vscode.window.showWarningMessage(`taskdev: ${r.error}`);
       provider.refresh();
     }),
+    vscode.commands.registerCommand('taskdev.moveTaskUp', elem => {
+      if (!elem || elem.kind !== 'task') return;
+      const r = core.moveTask(elem._project.paths.tasksFile, elem.name, 'up');
+      if (!r.ok) vscode.window.showWarningMessage(`taskdev: ${r.error}`);
+      provider.refresh();
+    }),
+    vscode.commands.registerCommand('taskdev.moveTaskDown', elem => {
+      if (!elem || elem.kind !== 'task') return;
+      const r = core.moveTask(elem._project.paths.tasksFile, elem.name, 'down');
+      if (!r.ok) vscode.window.showWarningMessage(`taskdev: ${r.error}`);
+      provider.refresh();
+    }),
+    vscode.commands.registerCommand('taskdev.addCategory', addCategoryToTask),
     vscode.commands.registerCommand('taskdev.showLog', showLog),
+    vscode.commands.registerCommand('taskdev.toggleLogTail', toggleLogTail),
+    vscode.commands.registerCommand('taskdev.setLogFilter', setLogFilter),
     vscode.commands.registerCommand('taskdev.installMcp', installMcpConfig),
     vscode.commands.registerCommand('taskdev.openTasksFile', () => openOrCreateTasksFile(provider)),
     vscode.commands.registerCommand('taskdev.createTasksFile', folderArg => createTasksFileInFolder(provider, folderArg)),
@@ -641,7 +971,6 @@ function activate(ctx) {
       // apart from organic visits.
       vscode.env.openExternal(vscode.Uri.parse('https://taskdev.dev/contact?from=extension'));
     }),
-    vscode.commands.registerCommand('taskdev.importVscodeTasks', () => importVscodeTasksCommand(ctx)),
     vscode.commands.registerCommand('taskdev.clearExit', elem => {
       // Reuses stopTask's exit-state cleanup branch: when the entry is
       // already exited, the call just deletes the state record (the
@@ -657,18 +986,26 @@ function activate(ctx) {
   function watchFolder(f) {
     if (watchers.has(f.uri.toString())) return;
     // Watch every taskdev.json / .taskdev.json anywhere under the workspace
+    // plus root-level .vscode/tasks.json for read-only VS Code task projects.
     // folder. VS Code's file system watcher delivers OS-level events for
     // matching files only; the recursive glob does not cause any periodic
-    // scanning. A taskdev.json appearing or disappearing triggers a single
+    // scanning. A matching file appearing or disappearing triggers a single
     // refresh, which re-walks the workspace to update the project list.
-    const watcher = vscode.workspace.createFileSystemWatcher(
+    const refresh = () => provider.refresh();
+    const taskdevWatcher = vscode.workspace.createFileSystemWatcher(
       new vscode.RelativePattern(f, '**/{taskdev.json,.taskdev.json}')
     );
-    watcher.onDidChange(() => provider.refresh());
-    watcher.onDidCreate(() => provider.refresh());
-    watcher.onDidDelete(() => provider.refresh());
-    watchers.set(f.uri.toString(), watcher);
-    ctx.subscriptions.push(watcher);
+    const vscodeTasksWatcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(f, '.vscode/tasks.json')
+    );
+    for (const watcher of [taskdevWatcher, vscodeTasksWatcher]) {
+      watcher.onDidChange(refresh);
+      watcher.onDidCreate(refresh);
+      watcher.onDidDelete(refresh);
+    }
+    const disposable = vscode.Disposable.from(taskdevWatcher, vscodeTasksWatcher);
+    watchers.set(f.uri.toString(), disposable);
+    ctx.subscriptions.push(disposable);
   }
   for (const f of vscode.workspace.workspaceFolders || []) watchFolder(f);
   writeWorkspacesFile();
@@ -682,93 +1019,13 @@ function activate(ctx) {
     provider.refresh();
   }, null, ctx.subscriptions);
   maybePromptMcpInstallAfterUpdate(ctx);
-  // Fire-and-forget: ask once per workspace if there's a .vscode/tasks.json
-  // but no taskdev.json. Imported projects are already visible read-only in
-  // the sidebar; the prompt only offers to make them editable by writing a
-  // real taskdev.json. Declining permanently is remembered per workspace.
-  maybePromptImportVscodeTasks(ctx).catch(err => {
-    if (output) output.appendLine(`taskdev: vscode-tasks prompt failed: ${err && err.message}`);
-  });
-}
-
-// Shared by the activation prompt AND the manual command. Returns true on
-// success so the prompt loop can suppress further nagging for this project.
-async function runVscodeTasksImport(project) {
-  const target = path.join(project.root, 'taskdev.json');
-  const r = core.materializeVscodeTasks(project.tasksFile, target);
-  if (!r.ok) {
-    vscode.window.showWarningMessage(`taskdev: ${r.error}`);
-    return false;
-  }
-  provider.refresh();
-  try {
-    const doc = await vscode.workspace.openTextDocument(r.tasksFile);
-    await vscode.window.showTextDocument(doc);
-  } catch { /* opening the file is a nice-to-have */ }
-  vscode.window.showInformationMessage(
-    `taskdev: imported ${r.tasksCount} task${r.tasksCount === 1 ? '' : 's'} into taskdev.json.`,
-  );
-  return true;
-}
-
-async function maybePromptImportVscodeTasks(ctx) {
-  const projects = discoverWorkspaceProjects();
-  const imported = projects.filter(p => p.imported === 'vscode');
-  if (imported.length === 0) return;
-  for (const p of imported) {
-    const stateKey = `taskdev.declinedVscodeImport.${p.root}`;
-    if (ctx.workspaceState.get(stateKey)) continue;
-    let tasksCount;
-    try { tasksCount = core.loadTasks(p.tasksFile).length; }
-    catch { tasksCount = 0; }
-    if (!tasksCount) continue;
-    const choice = await vscode.window.showInformationMessage(
-      `TaskDev: found ${tasksCount} task${tasksCount === 1 ? '' : 's'} in \`.vscode/tasks.json\` for "${p.name}". Create a \`taskdev.json\` so they're editable in TaskDev and the agent can add more? Your existing \`.vscode/tasks.json\` stays put.`,
-      'Create taskdev.json',
-      'Not now',
-      "Don't show again",
-    );
-    if (choice === 'Create taskdev.json') {
-      await runVscodeTasksImport(p);
-    } else if (choice === "Don't show again") {
-      ctx.workspaceState.update(stateKey, true);
-    }
-  }
-}
-
-// Command palette entry. Lets users re-trigger the import after dismissing
-// the activation prompt, or run it manually any time. Clears the
-// "don't show again" suppression for the project being imported so the
-// state stays consistent.
-async function importVscodeTasksCommand(ctx) {
-  const projects = discoverWorkspaceProjects().filter(p => p.imported === 'vscode');
-  if (projects.length === 0) {
-    vscode.window.showInformationMessage(
-      'taskdev: no .vscode/tasks.json found in any workspace folder without an existing taskdev.json.',
-    );
-    return;
-  }
-  let target;
-  if (projects.length === 1) {
-    target = projects[0];
-  } else {
-    const picks = projects.map(p => ({
-      label: p.name,
-      description: p.tasksFile,
-      project: p,
-    }));
-    const picked = await vscode.window.showQuickPick(picks, {
-      placeHolder: 'Import .vscode/tasks.json from which workspace folder?',
-    });
-    if (!picked) return;
-    target = picked.project;
-  }
-  if (await runVscodeTasksImport(target)) {
-    ctx.workspaceState.update(`taskdev.declinedVscodeImport.${target.root}`, undefined);
-  }
 }
 
 function deactivate() {
+  for (const type of _ansiDecorationTypes.values()) {
+    try { type.dispose(); } catch { /* ignore */ }
+  }
+  _ansiDecorationTypes.clear();
   // Stop running tasks when the extension deactivates (window close, extension
   // uninstall/upgrade). This prevents orphaned dev servers, but it also means
   // tasks do not survive editor reloads. If you need true supervisor behavior

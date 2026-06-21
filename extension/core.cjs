@@ -5,6 +5,155 @@ const { spawn, spawnSync } = require('node:child_process');
 
 const TASK_NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 
+const ANSI_STANDARD = [
+  'ansiBlack', 'ansiRed', 'ansiGreen', 'ansiYellow',
+  'ansiBlue', 'ansiMagenta', 'ansiCyan', 'ansiWhite',
+];
+const ANSI_BRIGHT = [
+  'ansiBrightBlack', 'ansiBrightRed', 'ansiBrightGreen', 'ansiBrightYellow',
+  'ansiBrightBlue', 'ansiBrightMagenta', 'ansiBrightCyan', 'ansiBrightWhite',
+];
+
+function ansi256Color(index) {
+  const n = Math.max(0, Math.min(255, Number(index) || 0));
+  if (n < 8) return ANSI_STANDARD[n];
+  if (n < 16) return ANSI_BRIGHT[n - 8];
+  if (n < 232) {
+    const i = n - 16;
+    const levels = [0, 95, 135, 175, 215, 255];
+    const r = levels[Math.floor(i / 36)];
+    const g = levels[Math.floor((i % 36) / 6)];
+    const b = levels[i % 6];
+    return `#${[r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')}`;
+  }
+  const gray = 8 + (n - 232) * 10;
+  return `#${gray.toString(16).padStart(2, '0').repeat(3)}`;
+}
+
+function effectiveAnsiStyle(style) {
+  const out = { ...style };
+  if (out.inverse) {
+    const fg = out.fg;
+    out.fg = out.bg;
+    out.bg = fg;
+  }
+  delete out.inverse;
+  return out;
+}
+
+function styleIsVisible(style) {
+  return Object.values(style).some(Boolean);
+}
+
+function applySgr(style, params) {
+  const codes = params === '' ? [0] : params.split(';').map(v => v === '' ? 0 : Number(v));
+  for (let i = 0; i < codes.length; i++) {
+    const code = Number.isFinite(codes[i]) ? codes[i] : 0;
+    if (code === 0) {
+      for (const key of Object.keys(style)) delete style[key];
+    } else if (code === 1) style.bold = true;
+    else if (code === 2) style.dim = true;
+    else if (code === 3) style.italic = true;
+    else if (code === 4) style.underline = true;
+    else if (code === 7) style.inverse = true;
+    else if (code === 9) style.strikethrough = true;
+    else if (code === 22) { delete style.bold; delete style.dim; }
+    else if (code === 23) delete style.italic;
+    else if (code === 24) delete style.underline;
+    else if (code === 27) delete style.inverse;
+    else if (code === 29) delete style.strikethrough;
+    else if (code >= 30 && code <= 37) style.fg = ANSI_STANDARD[code - 30];
+    else if (code === 39) delete style.fg;
+    else if (code >= 40 && code <= 47) style.bg = ANSI_STANDARD[code - 40];
+    else if (code === 49) delete style.bg;
+    else if (code >= 90 && code <= 97) style.fg = ANSI_BRIGHT[code - 90];
+    else if (code >= 100 && code <= 107) style.bg = ANSI_BRIGHT[code - 100];
+    else if (code === 38 || code === 48) {
+      const key = code === 38 ? 'fg' : 'bg';
+      const mode = codes[++i];
+      if (mode === 5 && i + 1 < codes.length) {
+        style[key] = ansi256Color(codes[++i]);
+      } else if (mode === 2 && i + 3 < codes.length) {
+        const rgb = codes.slice(i + 1, i + 4).map(v => Math.max(0, Math.min(255, v || 0)));
+        i += 3;
+        style[key] = `#${rgb.map(v => v.toString(16).padStart(2, '0')).join('')}`;
+      }
+    }
+  }
+}
+
+function parseTerminalText(value) {
+  if (typeof value !== 'string' || !value) return { text: value || '', spans: [] };
+  let text = '';
+  const spans = [];
+  const style = {};
+
+  function append(chunk) {
+    if (!chunk) return;
+    const clean = chunk
+      .replace(/\r/g, '')
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
+    if (!clean) return;
+    const start = text.length;
+    text += clean;
+    const visible = effectiveAnsiStyle(style);
+    if (!styleIsVisible(visible)) return;
+    const previous = spans[spans.length - 1];
+    const key = JSON.stringify(visible);
+    if (previous && previous.end === start && previous.key === key) previous.end = text.length;
+    else spans.push({ start, end: text.length, style: visible, key });
+  }
+
+  for (let i = 0; i < value.length;) {
+    if (value[i] === '\u001B' && value[i + 1] === ']') {
+      const bel = value.indexOf('\u0007', i + 2);
+      const st = value.indexOf('\u001B\\', i + 2);
+      if (bel < 0 && st < 0) break;
+      i = bel >= 0 && (st < 0 || bel < st) ? bel + 1 : st + 2;
+      continue;
+    }
+    const csi = value[i] === '\u009B' || (value[i] === '\u001B' && value[i + 1] === '[');
+    if (csi) {
+      const paramsStart = i + (value[i] === '\u009B' ? 1 : 2);
+      let end = paramsStart;
+      while (end < value.length && !(value.charCodeAt(end) >= 0x40 && value.charCodeAt(end) <= 0x7e)) end++;
+      if (end >= value.length) break;
+      const final = value[end];
+      if (final === 'm') applySgr(style, value.slice(paramsStart, end));
+      i = end + 1;
+      continue;
+    }
+    // Handle raw bracket sequences without ESC prefix (e.g., "[33;1m" from corrupted logs)
+    if (value[i] === '[' && i + 1 < value.length) {
+      let end = i + 1;
+      while (end < value.length && !(value.charCodeAt(end) >= 0x40 && value.charCodeAt(end) <= 0x7e)) end++;
+      if (end < value.length && end > i + 1) {
+        const final = value[end];
+        // Only skip if it looks like a CSI sequence (digits/semicolons followed by terminator)
+        const params = value.slice(i + 1, end);
+        if (/^[\d;]*$/.test(params) && 'mKHL'.includes(final)) {
+          i = end + 1;
+          continue;
+        }
+      }
+    }
+    if (value[i] === '\u001B') {
+      i += Math.min(2, value.length - i);
+      continue;
+    }
+    let end = i + 1;
+    while (end < value.length && value[end] !== '\u001B' && value[end] !== '\u009B' && value[end] !== '[') end++;
+    append(value.slice(i, end));
+    i = end;
+  }
+  for (const span of spans) delete span.key;
+  return { text, spans };
+}
+
+function stripTerminalSequences(value) {
+  return parseTerminalText(value).text;
+}
+
 function findTasksFile(startDir, stopAt) {
   let d = path.resolve(startDir);
   const stop = stopAt ? path.resolve(stopAt) : null;
@@ -21,7 +170,9 @@ function findTasksFile(startDir, stopAt) {
 }
 
 function pathsFor(tasksFile) {
-  const dir = path.dirname(tasksFile);
+  const dir = isVscodeTasksFile(tasksFile)
+    ? path.dirname(path.dirname(tasksFile))
+    : path.dirname(tasksFile);
   const runtime = path.join(dir, '.taskdev');
   return {
     tasksFile,
@@ -41,7 +192,16 @@ function createTasksFile(tasksFile, projectName) {
     fs.mkdirSync(path.dirname(tasksFile), { recursive: true });
     const config = {
       project: (typeof projectName === 'string' && projectName.trim()) || path.basename(path.dirname(tasksFile)),
-      tasks: [],
+      tasks: [
+        {
+          name: 'taskdev-home',
+          openBrowser: 'https://taskdev.dev',
+        },
+        {
+          name: 'taskdev-contact',
+          openBrowser: 'https://taskdev.dev/contact',
+        },
+      ],
     };
     const tmp = tasksFile + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n');
@@ -52,11 +212,18 @@ function createTasksFile(tasksFile, projectName) {
 
 function loadConfig(tasksFile) {
   if (!fs.existsSync(tasksFile)) return { tasks: [] };
+  if (isVscodeTasksFile(tasksFile)) return loadVscodeTasksConfig(tasksFile);
   try { return JSON.parse(fs.readFileSync(tasksFile, 'utf8')) || { tasks: [] }; }
   catch { return { tasks: [] }; }
 }
 
 function loadConfigForWrite(tasksFile) {
+  if (isVscodeTasksFile(tasksFile)) {
+    return {
+      ok: false,
+      error: 'this project reads .vscode/tasks.json directly; create a taskdev.json to edit tasks with TaskDev',
+    };
+  }
   if (!fs.existsSync(tasksFile)) return { ok: true, config: { tasks: [] } };
   try {
     return { ok: true, config: JSON.parse(fs.readFileSync(tasksFile, 'utf8')) || { tasks: [] } };
@@ -65,17 +232,245 @@ function loadConfigForWrite(tasksFile) {
   }
 }
 
+function isPlainObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizedCategory(category) {
+  if (typeof category !== 'string') return null;
+  const value = category.trim();
+  return value && value.length <= 64 && !/[\r\n]/.test(value) ? value : null;
+}
+
+function materializeTaskList(tasks) {
+  if (Array.isArray(tasks)) return tasks;
+  if (!isPlainObject(tasks)) return [];
+
+  const result = [];
+  for (const [category, groupTasks] of Object.entries(tasks)) {
+    if (!Array.isArray(groupTasks)) continue;
+    const groupCategory = normalizedCategory(category);
+    for (const task of groupTasks) {
+      if (!isPlainObject(task)) continue;
+      result.push(groupCategory && task.category === undefined
+        ? { ...task, category: groupCategory }
+        : task);
+    }
+  }
+  return result;
+}
+
+function editableTaskArray(config) {
+  if (Array.isArray(config.tasks)) return { ok: true, tasks: config.tasks };
+  if (config.tasks === undefined) {
+    config.tasks = [];
+    return { ok: true, tasks: config.tasks };
+  }
+  return {
+    ok: false,
+    error: 'grouped task maps are read-only for task editing; use an array-shaped tasks list to reorder, remove, or edit categories',
+  };
+}
+
 function loadTasks(tasksFile) {
   const data = loadConfig(tasksFile);
-  const tasks = Array.isArray(data?.tasks) ? data.tasks : [];
+  const tasks = materializeTaskList(data?.tasks);
   return tasks.filter(t =>
     t && typeof t.name === 'string' && TASK_NAME_RE.test(t.name) &&
-    typeof t.command === 'string' && t.command.length > 0
+    ((typeof t.command === 'string' && t.command.trim().length > 0) ||
+      isHttpUrl(t.openBrowser))
   );
 }
 
+function isHttpUrl(value) {
+  if (typeof value !== 'string') return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function isVscodeTasksFile(file) {
+  if (typeof file !== 'string') return false;
+  const normalized = path.normalize(file).toLowerCase();
+  return normalized.endsWith(path.normalize(path.join('.vscode', 'tasks.json')).toLowerCase());
+}
+
+function stripJsonc(text) {
+  let out = '';
+  let inString = false;
+  let quote = '';
+  let escaped = false;
+  for (let i = 0; i < String(text || '').length; i++) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (inString) {
+      out += ch;
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === quote) inString = false;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = true;
+      quote = ch;
+      out += ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      while (i < text.length && text[i] !== '\n') i++;
+      out += '\n';
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      i += 2;
+      while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i++;
+      i++;
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+function stripTrailingJsonCommas(text) {
+  let out = '';
+  let inString = false;
+  let quote = '';
+  let escaped = false;
+  for (let i = 0; i < String(text || '').length; i++) {
+    const ch = text[i];
+    if (inString) {
+      out += ch;
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === quote) inString = false;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = true;
+      quote = ch;
+      out += ch;
+      continue;
+    }
+    if (ch === ',') {
+      let j = i + 1;
+      while (/\s/.test(text[j] || '')) j++;
+      if (text[j] === '}' || text[j] === ']') continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+function vscodeTaskName(label, index, used) {
+  const base = String(label || `task-${index + 1}`)
+    .trim()
+    .replace(/[^A-Za-z0-9_.-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64) || `task-${index + 1}`;
+  let name = base;
+  let suffix = 2;
+  while (used.has(name)) {
+    const tail = `-${suffix++}`;
+    name = `${base.slice(0, 64 - tail.length)}${tail}`;
+  }
+  used.add(name);
+  return name;
+}
+
+function shellQuoteArg(value) {
+  const s = String(value);
+  if (/^[A-Za-z0-9_./:@%+=,\-\\]+$/.test(s)) return s;
+  return `"${s.replace(/(["\\$`])/g, '\\$1')}"`;
+}
+
+function vscodeCommandLine(task) {
+  const command = typeof task?.command === 'string' ? task.command.trim() : '';
+  if (!command) return null;
+  const args = Array.isArray(task.args) ? task.args.map(shellQuoteArg) : [];
+  return [command, ...args].join(' ').trim();
+}
+
+function mapVscodeTask(task, index = 0, rootDir = process.cwd(), used = new Set()) {
+  if (!task || typeof task !== 'object') return null;
+  const label = typeof task.label === 'string' && task.label.trim()
+    ? task.label.trim()
+    : typeof task.taskName === 'string' && task.taskName.trim()
+      ? task.taskName.trim()
+      : null;
+  if (!label) return null;
+  const command = vscodeCommandLine(task);
+  if (!command) return null;
+  const options = task.options && typeof task.options === 'object' ? task.options : {};
+  const out = {
+    name: vscodeTaskName(label, index, used),
+    command,
+    source: 'vscode',
+    type: 'vscode',
+    detail: label,
+  };
+  if (typeof options.cwd === 'string' && options.cwd.trim()) {
+    out.cwd = path.isAbsolute(options.cwd) ? options.cwd : path.resolve(rootDir, options.cwd);
+  }
+  if (options.env && typeof options.env === 'object' && !Array.isArray(options.env)) {
+    out.env = Object.fromEntries(
+      Object.entries(options.env).filter(([k, v]) => typeof k === 'string' && typeof v === 'string'),
+    );
+  }
+  if (typeof task.group === 'string' && task.group.trim()) out.category = task.group.trim();
+  else if (task.group && typeof task.group.kind === 'string' && task.group.kind.trim()) out.category = task.group.kind.trim();
+  return out;
+}
+
+function loadVscodeTasksConfig(tasksFile) {
+  let parsed;
+  try {
+    parsed = JSON.parse(stripTrailingJsonCommas(stripJsonc(fs.readFileSync(tasksFile, 'utf8'))));
+  } catch {
+    return { project: path.basename(path.dirname(path.dirname(tasksFile))), tasks: [], _imported: 'vscode' };
+  }
+  const root = path.dirname(path.dirname(tasksFile));
+  const used = new Set();
+  const tasks = (Array.isArray(parsed?.tasks) ? parsed.tasks : [])
+    .map((task, index) => mapVscodeTask(task, index, root, used))
+    .filter(Boolean);
+  return {
+    project: sanitizeProjectName(parsed?.project, path.basename(root)),
+    tasks,
+    _imported: 'vscode',
+  };
+}
+
+function materializeVscodeTasks(vscodeTasksFile, targetTasksFile) {
+  const config = loadVscodeTasksConfig(vscodeTasksFile);
+  const out = {
+    project: config.project,
+    tasks: config.tasks.map(t => {
+      const copy = { ...t };
+      delete copy.type;
+      delete copy.source;
+      if (copy.detail === copy.name) delete copy.detail;
+      return copy;
+    }),
+  };
+  try {
+    fs.mkdirSync(path.dirname(targetTasksFile), { recursive: true });
+    const tmp = targetTasksFile + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(out, null, 2) + '\n');
+    fs.renameSync(tmp, targetTasksFile);
+    return { ok: true, tasksFile: targetTasksFile, tasksCount: out.tasks.length };
+  } catch (e) {
+    return { ok: false, error: `failed to write taskdev.json: ${e.message}` };
+  }
+}
+
 function resolveCwd(tasksFile, task) {
-  const base = path.dirname(tasksFile);
+  const base = isVscodeTasksFile(tasksFile)
+    ? path.dirname(path.dirname(tasksFile))
+    : path.dirname(tasksFile);
   if (!task.cwd) return base;
   return path.isAbsolute(task.cwd) ? task.cwd : path.resolve(base, task.cwd);
 }
@@ -348,9 +743,10 @@ function addTask(tasksFile, task, options = {}) {
   const loaded = loadConfigForWrite(tasksFile);
   if (!loaded.ok) return loaded;
   const config = loaded.config;
-  if (!Array.isArray(config.tasks)) config.tasks = [];
-  if (config.tasks.some(t => t?.name === valid.task.name)) return { ok: false, error: 'task already exists' };
-  config.tasks.push(valid.task);
+  const editable = editableTaskArray(config);
+  if (!editable.ok) return editable;
+  if (editable.tasks.some(t => t?.name === valid.task.name)) return { ok: false, error: 'task already exists' };
+  editable.tasks.push(valid.task);
   fs.mkdirSync(path.dirname(tasksFile), { recursive: true });
   const tmp = tasksFile + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n');
@@ -369,10 +765,135 @@ function removeTask(tasksFile, name, options = {}) {
   const loaded = loadConfigForWrite(tasksFile);
   if (!loaded.ok) return loaded;
   const config = loaded.config;
-  if (!Array.isArray(config.tasks)) config.tasks = [];
-  const index = config.tasks.findIndex(t => t?.name === name);
+  const editable = editableTaskArray(config);
+  if (!editable.ok) return editable;
+  const index = editable.tasks.findIndex(t => t?.name === name);
   if (index < 0) return { ok: false, error: 'unknown task' };
-  const [task] = config.tasks.splice(index, 1);
+  const [task] = editable.tasks.splice(index, 1);
+  fs.mkdirSync(path.dirname(tasksFile), { recursive: true });
+  const tmp = tasksFile + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n');
+  fs.renameSync(tmp, tasksFile);
+  return { ok: true, task, tasksFile };
+}
+
+function moveTask(tasksFile, name, direction) {
+  if (!TASK_NAME_RE.test(name || '')) return { ok: false, error: 'invalid task name' };
+  if (direction !== 'up' && direction !== 'down') {
+    return { ok: false, error: 'direction must be "up" or "down"' };
+  }
+  const loaded = loadConfigForWrite(tasksFile);
+  if (!loaded.ok) return loaded;
+  const config = loaded.config;
+  const editable = editableTaskArray(config);
+  if (!editable.ok) return editable;
+  const tasks = editable.tasks;
+  const index = tasks.findIndex(t => t?.name === name);
+  if (index < 0) return { ok: false, error: 'unknown task' };
+
+  const categoryOf = task =>
+    typeof task?.category === 'string' && task.category.trim() ? task.category.trim() : null;
+  const category = categoryOf(tasks[index]);
+  const step = direction === 'up' ? -1 : 1;
+  let targetIndex = index + step;
+  while (targetIndex >= 0 && targetIndex < tasks.length) {
+    if (categoryOf(tasks[targetIndex]) === category) break;
+    targetIndex += step;
+  }
+  if (targetIndex < 0 || targetIndex >= tasks.length) {
+    return { ok: true, moved: false, task: tasks[index], tasksFile };
+  }
+
+  [tasks[index], tasks[targetIndex]] = [tasks[targetIndex], tasks[index]];
+  fs.mkdirSync(path.dirname(tasksFile), { recursive: true });
+  const tmp = tasksFile + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n');
+  fs.renameSync(tmp, tasksFile);
+  return { ok: true, moved: true, task: tasks[targetIndex], tasksFile };
+}
+
+function moveTaskTo(tasksFile, name, target = {}) {
+  if (!TASK_NAME_RE.test(name || '')) return { ok: false, error: 'invalid task name' };
+  const beforeName = target.beforeName;
+  if (beforeName !== undefined && !TASK_NAME_RE.test(beforeName || '')) {
+    return { ok: false, error: 'invalid target task name' };
+  }
+  if (target.category !== undefined && target.category !== null && typeof target.category !== 'string') {
+    return { ok: false, error: 'category must be a string or null' };
+  }
+
+  const loaded = loadConfigForWrite(tasksFile);
+  if (!loaded.ok) return loaded;
+  const config = loaded.config;
+  const editable = editableTaskArray(config);
+  if (!editable.ok) return editable;
+  const tasks = editable.tasks;
+  const sourceIndex = tasks.findIndex(t => t?.name === name);
+  if (sourceIndex < 0) return { ok: false, error: 'unknown task' };
+  if (beforeName === name) return { ok: true, moved: false, task: tasks[sourceIndex], tasksFile };
+
+  let category = target.category;
+  if (beforeName !== undefined) {
+    const targetTask = tasks.find(t => t?.name === beforeName);
+    if (!targetTask) return { ok: false, error: 'unknown target task' };
+    category = typeof targetTask.category === 'string' && targetTask.category.trim()
+      ? targetTask.category.trim()
+      : null;
+  }
+  if (typeof category === 'string') category = category.trim() || null;
+
+  const [task] = tasks.splice(sourceIndex, 1);
+  if (category === null) delete task.category;
+  else task.category = category;
+
+  let insertIndex;
+  if (beforeName !== undefined) {
+    insertIndex = tasks.findIndex(t => t?.name === beforeName);
+  } else {
+    const categoryOf = item =>
+      typeof item?.category === 'string' && item.category.trim() ? item.category.trim() : null;
+    insertIndex = tasks.length;
+    for (let i = tasks.length - 1; i >= 0; i--) {
+      if (categoryOf(tasks[i]) === category) {
+        insertIndex = i + 1;
+        break;
+      }
+    }
+    if (category === null && insertIndex === tasks.length &&
+        !tasks.some(item => categoryOf(item) === null)) {
+      insertIndex = 0;
+    }
+  }
+  tasks.splice(insertIndex, 0, task);
+
+  fs.mkdirSync(path.dirname(tasksFile), { recursive: true });
+  const tmp = tasksFile + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n');
+  fs.renameSync(tmp, tasksFile);
+  return { ok: true, moved: true, task, tasksFile };
+}
+
+function setTaskCategory(tasksFile, name, category) {
+  if (!TASK_NAME_RE.test(name || '')) return { ok: false, error: 'invalid task name' };
+  if (category !== null && typeof category !== 'string') {
+    return { ok: false, error: 'category must be a string or null' };
+  }
+  const normalized = typeof category === 'string' ? category.trim() : '';
+  if (normalized.length > 64 || /[\r\n]/.test(normalized)) {
+    return { ok: false, error: 'category must be a single line of at most 64 characters' };
+  }
+
+  const loaded = loadConfigForWrite(tasksFile);
+  if (!loaded.ok) return loaded;
+  const config = loaded.config;
+  const editable = editableTaskArray(config);
+  if (!editable.ok) return editable;
+  const task = editable.tasks.find(t => t?.name === name);
+  if (!task) return { ok: false, error: 'unknown task' };
+
+  if (normalized) task.category = normalized;
+  else delete task.category;
+
   fs.mkdirSync(path.dirname(tasksFile), { recursive: true });
   const tmp = tasksFile + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n');
@@ -463,6 +984,9 @@ function appendLog(logPath, message) {
 
 function startTask(task, paths) {
   if (!TASK_NAME_RE.test(task.name)) return { ok: false, error: 'invalid task name' };
+  if (typeof task.command !== 'string' || !task.command.trim()) {
+    return { ok: false, error: 'browser-only tasks can only be opened from the TaskDev sidebar' };
+  }
   return withStateLock(paths.stateFile, () => _startTaskLocked(task, paths));
 }
 
@@ -522,7 +1046,7 @@ function _startTaskLocked(task, paths) {
     startedAt: Date.now(),
     processFingerprint: processFingerprint(pid),
     status: 'running',
-    source: 'taskdev',
+    source: task.source || (isVscodeTasksFile(paths.tasksFile) ? 'vscode' : 'taskdev'),
     logPath,
   };
   writeState(paths.stateFile, state);
@@ -570,17 +1094,19 @@ function listTasks(paths, options = {}) {
     const e = state.tasks[t.name];
     return {
       name: t.name,
-      command: t.command,
+      command: typeof t.command === 'string' ? t.command : null,
       cwd: resolveCwd(paths.tasksFile, t),
       pid: e?.pid ?? null,
       status: e?.pid ? 'running' : 'stopped',
       startedAt: e?.startedAt ?? null,
       uptimeMs: e?.startedAt ? now - e.startedAt : null,
-      source: e?.source ?? null,
-      logPath: e?.logPath ?? currentLogPath(paths, t.name) ?? logPathFor(paths, t.name),
+      source: e?.source ?? (typeof t.source === 'string' ? t.source : null),
+      logPath: typeof t.command === 'string'
+        ? e?.logPath ?? currentLogPath(paths, t.name) ?? logPathFor(paths, t.name)
+        : null,
+      openBrowser: typeof t.openBrowser === 'string' || t.openBrowser === true ? t.openBrowser : null,
       type: typeof t.type === 'string' ? t.type : null,
       detail: typeof t.detail === 'string' ? t.detail : null,
-      icon: typeof t.icon === 'string' || (t.icon && typeof t.icon === 'object') ? t.icon : null,
       category: typeof t.category === 'string' && t.category.trim() ? t.category.trim() : null,
     };
   });
@@ -802,6 +1328,24 @@ function discoverProjects(roots, opts) {
       const name = sanitizeProjectName(cfg.project, fallback);
       projects.push({ name, root, tasksFile, paths: pathsFor(tasksFile) });
     }
+    const rootTaskdev = path.join(root, 'taskdev.json');
+    const rootHiddenTaskdev = path.join(root, '.taskdev.json');
+    const vscodeTasksFile = path.join(root, '.vscode', 'tasks.json');
+    if (!fs.existsSync(rootTaskdev) && !fs.existsSync(rootHiddenTaskdev) &&
+        fs.existsSync(vscodeTasksFile) && !seen.has(vscodeTasksFile)) {
+      const cfg = loadVscodeTasksConfig(vscodeTasksFile);
+      if (Array.isArray(cfg.tasks) && cfg.tasks.length > 0) {
+        seen.add(vscodeTasksFile);
+        projects.push({
+          name: sanitizeProjectName(cfg.project, path.basename(root)),
+          root,
+          tasksFile: vscodeTasksFile,
+          paths: pathsFor(vscodeTasksFile),
+          imported: 'vscode',
+          readOnly: true,
+        });
+      }
+    }
   }
   // Disambiguate duplicate names by appending " (folder)".
   const counts = new Map();
@@ -816,12 +1360,13 @@ function discoverProjects(roots, opts) {
 }
 
 module.exports = {
-  TASK_NAME_RE, PROJECT_NAME_RE, findTasksFile,
+  TASK_NAME_RE, PROJECT_NAME_RE, parseTerminalText, stripTerminalSequences, findTasksFile,
   pathsFor, ensureRuntimeDirs, createTasksFile, loadConfig, loadTasks, resolveCwd,
   readState, writeState, isAlive, pidAlive, processFingerprint, reconcile, startTask, stopTask, restartTask, listTasks,
   logPathFor, newLogPath, currentLogPath, listLogFiles, logHistory,
   tailLog, TAIL_READ_DEFAULT_BYTES, TAIL_READ_MAX_BYTES,
-  validateTaskCommand, validateNewTask, addTask, removeTask, loadConfigForWrite,
+  validateTaskCommand, validateNewTask, addTask, removeTask, moveTask, moveTaskTo, setTaskCategory, loadConfigForWrite,
   discoverProjects, sanitizeProjectName, scanForTasksFiles, SCAN_EXCLUDED_DIRS,
+  isVscodeTasksFile, loadVscodeTasksConfig, mapVscodeTask, stripJsonc, materializeVscodeTasks,
   _clearVerifiedFingerprintCache, _verifiedFingerprintCacheSize,
 };
