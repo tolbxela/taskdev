@@ -2,8 +2,12 @@
   "project": "TaskDev Example",
   "tasks": [
     {
-      "name": "hello-test",
-      "command": "node -e \"console.log('hello from taskdev example')\""
+      "name": "taskdev-home",
+      "openBrowser": "https://taskdev.dev"
+    },
+    {
+      "name": "taskdev-contact",
+      "openBrowser": "https://taskdev.dev/contact"
     }
   ]
 }

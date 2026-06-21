@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.21 - 2026-06-20
+
+- **Integrated log editor.** The sidebar log button now opens a read-only `taskdev-log` editor instead of an OutputChannel, with native find/copy, chronological output, tail-follow on by default, a tail toggle, and a case-insensitive line filter.
+- **ANSI log rendering.** Common ANSI colors and text styles are rendered with VS Code editor decorations while unsupported terminal control sequences are stripped from the displayed text. Raw log files remain unchanged.
+- **Task reordering and category editing.** Tasks can be dragged to reorder within a project, dropped onto categories to move groups, or dropped onto the project to remove a category. Context-menu actions for **Move task up**, **Move task down**, and **Add category…** provide keyboard/menu fallbacks.
+- **Browser-only tasks.** A task can omit `command` when `openBrowser` is a full `http://` or `https://` URL. These open immediately from the sidebar and do not create a process or log file.
+- **Grouped task maps.** `taskdev.json` can use a category-keyed `tasks` object to avoid repeating `category` on every task. Grouped maps are read-only for reorder/category edit commands; use the array form when you want sidebar editing.
+- **Direct VS Code task support.** Workspaces with `.vscode/tasks.json` and no root `taskdev.json` now appear as read-only TaskDev projects without importing. TaskDev maps labels to MCP/log-safe names, runs them with TaskDev supervision, and exposes status/logs over MCP.
+- Removed the task-level `icon` field from `taskdev.json`; task rows now use TaskDev's inferred/status icons only.
+- New `taskdev.json` files now start with TaskDev home/contact browser examples, and the bundled example config mirrors that starter shape.
+- Docs now cover browser-only tasks, task reordering, category editing, and ANSI log rendering.
+- Added core tests for ANSI parsing, browser-only task loading/listing, task movement, drag/drop-style placement, and category updates.
+
 ## 0.1.20 - 2026-05-14
 
 - **Big Windows perf fix.** `isAlive()` now uses `process.kill(pid, 0)` instead of spawning `tasklist` on every reconcile, and the process-fingerprint check is cached per PID for the extension's lifetime. On Windows 11 24H2 (where `wmic` was removed) we no longer fall back to a `powershell.exe` cold start (previously 1–3 s **per task start** while holding the state lock) — we simply skip the fingerprint and rely on the PID-alive check. Reconcile cost drops from "N child-process spawns every 10 s" to a single in-process syscall per task. Starting a dotnet app, opening the log, and stopping tasks should now feel instant.
@@ -23,7 +36,6 @@
 - `taskdev_logs` now returns plain log text on success and a structured error on failure (instead of mixing the two shapes).
 - README rewritten to be more engaging for new users; sidebar deep-dive moved out to the split docs.
 - New docs at `/docs`: [`usage.md`](https://github.com/tolbxela/taskdev/blob/main/docs/usage.md) (practical recipes), [`config.md`](https://github.com/tolbxela/taskdev/blob/main/docs/config.md) (schema, runtime files, MCP tools), and [`security.md`](https://github.com/tolbxela/taskdev/blob/main/docs/security.md) (trust model, allow-list, denylist). The previous combined `security-and-config.md` was split for clearer separation between policy and reference.
-- Docs are now published on [**taskdev.dev/docs**](https://taskdev.dev/docs) with a terminal-themed reader that matches the rest of the site. `/docs` at the repo root stays the source of truth; the site syncs from it at build time.
 
 ## 0.1.18 - 2026-05-10
 

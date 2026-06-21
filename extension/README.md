@@ -27,7 +27,7 @@ Plain JSON. Local processes. Local logs. No telemetry. No network listener.
 ## Install
 
 1. Search for **TaskDev** in your editor's extensions panel, or grab it from the [Marketplace](https://marketplace.visualstudio.com/items?itemName=tolbxela.taskdev) or [Open VSX](https://open-vsx.org/extension/tolbxela/taskdev).
-2. Drop a `taskdev.json` in your project root (the sidebar's **Open taskdev.json** button creates one for you).
+2. Drop a `taskdev.json` in your project root (the sidebar's **Open task file** button creates one for you).
 3. Run **TaskDev: Install MCP config** from the command palette to wire up your agent.
 
 That's it. Hit play on any task and it runs in the background with file-backed logs the agent can read.
@@ -43,8 +43,7 @@ Create `taskdev.json` in your workspace root:
     {
       "name": "api",
       "command": "dotnet run --project src/Api",
-      "detail": "Starts the backend API",
-      "icon": "server-process"
+      "detail": "Starts the backend API"
     },
     {
       "name": "ui",
@@ -52,10 +51,6 @@ Create `taskdev.json` in your workspace root:
       "command": "npm run dev",
       "cwd": "ui",
       "detail": "Starts the Vite dev server",
-      "icon": {
-        "id": "globe",
-        "color": "terminal.ansiBlue"
-      },
       "env": {
         "PORT": "5173"
       }
@@ -71,10 +66,17 @@ for a minimal example.
 
 ![TaskDev sidebar showing a project with tasks](https://raw.githubusercontent.com/tolbxela/taskdev/main/docs/article/Screenshot%202026-05-10%20001838.png)
 
-Each task row shows an icon (green while running), its name, and either the
-`detail` text or `running · 12m` once started. Hover to reveal **play**,
-**stop**, and **log** buttons. The view title gives you **Install MCP
-config**, **Open taskdev.json**, and **Refresh**.
+Each task row shows an inferred status icon and its name. Status, detail, command, working
+directory, uptime, and log path remain available in the tooltip. Hover to
+reveal **play**, **stop**, and **log** buttons. The view title gives you
+**Install MCP config**, **Open task file**, and **Refresh**.
+
+For array-shaped task lists, drag tasks with the mouse to reorder them. Drop on
+another task to place it before that task, on a category to move it into that
+group, or on the project to make it uncategorized. The new order and category
+persist in `taskdev.json`.
+**Move task up** and **Move task down** remain available from the context menu.
+Use **Add category…** to create, replace, or remove a task's category.
 
 The sidebar refreshes every 10 seconds while tasks are running, every 60
 otherwise, and immediately on `taskdev.json` save. Multi-root workspaces show
@@ -89,7 +91,9 @@ and [Security](https://taskdev.dev/docs/security) for the allow-list.
 
 - Edit `taskdev.json`. The sidebar updates on save.
 - Hit play/stop to control tasks. The log button opens the current run in a
-  normal editor tab.
+  normal editor tab. Common ANSI colors and text styles are rendered with
+  editor decorations; unsupported cursor/control sequences are removed. The
+  raw log file remains unchanged.
 - Historical logs live in `.taskdev/logs/<task>.<timestamp>.log` (last 20 kept
   per task).
 - Stopping a task takes down its whole process tree
@@ -124,20 +128,17 @@ Fields:
 | --- | --- | --- |
 | `project` | no | Display name. Defaults to the workspace folder name. |
 | `name` | yes | Unique task name. Must match `^[A-Za-z0-9_.-]{1,64}$`. |
-| `command` | yes | Shell command to run. |
+| `command` | usually | Shell command to run. May be omitted when `openBrowser` is a full `http(s)` URL. |
 | `cwd` | no | Relative to the task file directory, or absolute. |
 | `env` | no | Extra environment variables for the task process. |
 | `type` | no | Short category shown in tooltips, such as `npm` or `dotnet`. |
 | `detail` | no | Human-friendly description shown in the tree and tooltip. |
-| `icon` | no | VS Code codicon name, or `{ "id": "...", "color": "..." }`. |
 | `category` | no | Group label shown as a collapsible folder in the sidebar (e.g. `"Extension"`, `"Web Site"`). Tasks sharing the same label are grouped together; uncategorized tasks appear above the groups. |
-| `openBrowser` | no | Opens a URL in the default browser when you start the task. `true` opens `http://localhost:<env.PORT>` (defaults to 3000). A path like `/admin` is appended to that URL. A full `http(s)://...` URL opens as-is. |
+| `openBrowser` | no | Opens a URL when you start the task. A full `http(s)` URL can be used without `command` as a simple browser action. `true` and paths such as `/admin` are for command-backed server tasks. |
 
-## Settings
-
-| Setting | Default | Notes |
-| --- | --- | --- |
-| `taskdev.defaultTaskIcon` | `auto` | Fallback icon when a task does not define `icon`. Use `auto` for inferred icons, or set a codicon id like `file-code`. |
+For compact config, `tasks` may also be an object keyed by category name. That
+form avoids repeating `category`, but task editing commands require the array
+form.
 
 ## MCP For Agents
 

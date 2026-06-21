@@ -2,7 +2,7 @@
   "name": "taskdev",
   "displayName": "TaskDev",
   "description": "Manage long-running dev tasks from VS Code and MCP with shared process supervision, reliable start/stop, and file-backed logs for AI agents.",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "publisher": "tolbxela",
   "icon": "media/icon.png",
   "galleryBanner": {
@@ -57,12 +57,17 @@
     "onView:taskdev.tasks",
     "onCommand:taskdev.start",
     "onCommand:taskdev.stop",
+    "onCommand:taskdev.moveTaskUp",
+    "onCommand:taskdev.moveTaskDown",
+    "onCommand:taskdev.addCategory",
     "onCommand:taskdev.showLog",
     "onCommand:taskdev.refresh",
     "onCommand:taskdev.openTasksFile",
     "onCommand:taskdev.createTasksFile",
     "onCommand:taskdev.installMcp",
-    "onCommand:taskdev.sendFeedback"
+    "onCommand:taskdev.sendFeedback",
+    "onCommand:taskdev.toggleLogTail",
+    "onCommand:taskdev.setLogFilter"
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
@@ -72,10 +77,19 @@
     "configuration": {
       "title": "TaskDev",
       "properties": {
-        "taskdev.defaultTaskIcon": {
-          "type": "string",
-          "default": "auto",
-          "description": "Default codicon id for task items when a task does not define its own icon. Use \"auto\" to keep inferred icons based on task name/command."
+        "taskdev.logViewer.maxLines": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 100,
+          "maximum": 100000,
+          "description": "Maximum number of log lines kept in the TaskDev log viewer buffer. Older lines are dropped once this is exceeded."
+        },
+        "taskdev.logViewer.refreshIntervalMs": {
+          "type": "number",
+          "default": 500,
+          "minimum": 100,
+          "maximum": 5000,
+          "description": "How often (in milliseconds) the TaskDev log viewer refreshes while tailing. Bursty output is coalesced into at most one refresh per interval. Default 500ms (twice per second)."
         }
       }
     },
@@ -109,6 +123,24 @@
         "icon": "$(debug-stop)"
       },
       {
+        "command": "taskdev.moveTaskUp",
+        "title": "Move task up",
+        "category": "TaskDev",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "taskdev.moveTaskDown",
+        "title": "Move task down",
+        "category": "TaskDev",
+        "icon": "$(arrow-down)"
+      },
+      {
+        "command": "taskdev.addCategory",
+        "title": "Add category…",
+        "category": "TaskDev",
+        "icon": "$(folder)"
+      },
+      {
         "command": "taskdev.showLog",
         "title": "Show log",
         "icon": "$(output)"
@@ -120,7 +152,7 @@
       },
       {
         "command": "taskdev.openTasksFile",
-        "title": "Open taskdev.json",
+        "title": "Open task file",
         "icon": "$(go-to-file)"
       },
       {
@@ -139,9 +171,33 @@
         "title": "Send feedback",
         "category": "TaskDev",
         "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "taskdev.toggleLogTail",
+        "title": "Toggle log tail (follow)",
+        "category": "TaskDev",
+        "icon": "$(arrow-down)"
+      },
+      {
+        "command": "taskdev.setLogFilter",
+        "title": "Filter log lines…",
+        "category": "TaskDev",
+        "icon": "$(filter)"
       }
     ],
     "menus": {
+      "editor/title": [
+        {
+          "command": "taskdev.setLogFilter",
+          "when": "resourceScheme == taskdev-log",
+          "group": "navigation@0"
+        },
+        {
+          "command": "taskdev.toggleLogTail",
+          "when": "resourceScheme == taskdev-log",
+          "group": "navigation@1"
+        }
+      ],
       "view/title": [
         {
           "command": "taskdev.installMcp",
@@ -181,8 +237,26 @@
           "command": "taskdev.showLog",
           "when": "view == taskdev.tasks && (viewItem == running || viewItem == stopped)",
           "group": "inline@2"
+        },
+        {
+          "command": "taskdev.moveTaskUp",
+          "when": "view == taskdev.tasks && (viewItem == running || viewItem == stopped || viewItem == exited || viewItem == exited-unknown)",
+          "group": "taskdev@1"
+        },
+        {
+          "command": "taskdev.moveTaskDown",
+          "when": "view == taskdev.tasks && (viewItem == running || viewItem == stopped || viewItem == exited || viewItem == exited-unknown)",
+          "group": "taskdev@2"
+        },
+        {
+          "command": "taskdev.addCategory",
+          "when": "view == taskdev.tasks && (viewItem == running || viewItem == stopped || viewItem == exited || viewItem == exited-unknown)",
+          "group": "taskdev@3"
         }
       ]
     }
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.9.2"
   }
 }
